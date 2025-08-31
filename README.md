@@ -17,6 +17,7 @@ LaZagna is an open-source tool for designing and evaluating 3D FPGA architecture
 Before building, ensure you have all the Python dependencies installed. You can do this using:
 
 ```bash
+make prereqs
 pip install -r requirements.txt
 ```
 
