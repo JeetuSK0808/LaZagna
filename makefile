@@ -31,7 +31,9 @@ clean_files:
 	rm -r ./results/*x*
 	rm -rf ./results/results_csvs/*
 
-clean: clean_openfpga clean_files
+clean: clean_openfpga
+
+make clean_all: clean_openfpga clean_files
 
 # Allow passing -j and other flags to the build step
 FLAGS ?= -j1
