@@ -1,3 +1,6 @@
 [submodule "OpenFPGA"]
 	path = OpenFPGA
 	url = https://github.com/IY2002/OpenFPGA.git
+[submodule "benchmarks"]
+	path = benchmarks
+	url = https://github.com/IY2002/Benchmarks_LaZagna.git
