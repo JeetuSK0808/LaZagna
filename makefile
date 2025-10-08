@@ -16,6 +16,7 @@ init:
 # Build OpenFPGA
 build:
 	cd OpenFPGA && $(MAKE) $(MAKEFLAGS) all
+	echo "LaZagna Build complete."
 
 # Clean build outputs in the OpenFPGA
 clean_openfpga:

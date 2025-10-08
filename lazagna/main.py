@@ -82,8 +82,6 @@ def main():
 
     printing.verbose = verbose
 
-    # Determine the number of CPUs to use (leave one free for system responsiveness)
-    # num_workers = max(1, psutil.cpu_count(logical=True) - 1)
     num_workers = args.num_workers
 
     print(f"Running {len(run_params)} jobs in parallel using {num_workers} workers")

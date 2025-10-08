@@ -469,13 +469,17 @@ node_switch_id = {
     "0": "2",
     "1": "3",
     "2": "7"
-
 }
+
+segment_to_mux_str = {}
+segment_to_mux_id = {}
+segment_str_to_id = {}
+switch_str_to_id = {}
 
 def create_edge(src_node, sink_node, src_layer, sink_layer, output_segment):
     # need to figure put edge switch based on sink_node segment id
     global switch_id
-    switch=node_switch_id.get(str(output_segment), str(switch_id))
+    switch=segment_to_mux_id.get(str(output_segment), str(switch_id))
 
     new_edge = edge_struct(src_node, sink_node, src_layer, sink_layer, switch)
     # add_edge((src_node, sink_node), new_edge)
@@ -1563,7 +1567,7 @@ def extract_switches_and_segments_streaming(file_path, segment_name, switch_name
     """
     Extract only switches and segments, return early without processing nodes
     """
-    global switch_id, segment_id, pattern_dict
+    global switch_id, segment_id, pattern_dict, switch_str_to_id, segment_str_to_id, segment_to_mux_str, segment_to_mux_id
     
     parser = etree.iterparse(
         file_path,
@@ -1592,6 +1596,7 @@ def extract_switches_and_segments_streaming(file_path, segment_name, switch_name
             if name == switch_name:
                 switch_id = int(elem.get('id'))
                 found_switch = True
+            switch_str_to_id[name] = int(elem.get('id'))
             elem.clear()
         
         # Process segments
@@ -1614,6 +1619,7 @@ def extract_switches_and_segments_streaming(file_path, segment_name, switch_name
             if name == segment_name:
                 segment_id = id_val
                 found_segment = True
+            segment_str_to_id[name] = id_val
             elem.clear()
         
         # Once we've processed both switches and segments, we can stop
@@ -1624,12 +1630,21 @@ def extract_switches_and_segments_streaming(file_path, segment_name, switch_name
         if event == 'end':
             elem.clear()
 
+        # Process Segment to Mux Mapping (Convert from string to id)
+    for seg_name, mux_name in segment_to_mux_str.items():
+        if seg_name in segment_str_to_id and mux_name in switch_str_to_id:
+            segment_to_mux_id[str(segment_str_to_id[seg_name])] = str(switch_str_to_id[mux_name])
+        else:
+            print(f"ERROR: Segment {seg_name} or Mux {mux_name} not found in architecture file.")
+            exit(1)
+
 def parse_arch_xml(arch_file):
     '''
     Function to parse the architecture XML file. It looks for the SB connection pattern of the segments in the architecture.
     As well as the segment id and the switch id for the 3D SBs (if defined by user), else it uses the first segment and switch it finds.
     '''
     global pattern_dict
+    global segment_to_mux_str
     print_verbose(f"Reading Architecture File: {arch_file}")
     parser = etree.XMLParser(
             remove_blank_text=True,
@@ -1651,6 +1666,7 @@ def parse_arch_xml(arch_file):
         pattern = segment.find("sb").text
         pattern = pattern.split(" ")
         pattern_dict[name] = [True if x == "1" else False for x in pattern]
+        segment_to_mux_str[name] = segment.find("mux").get("name")
 
 def main():
     start_time = time.time()
