@@ -1,4 +1,4 @@
-# <img src="./images/LaZagna_logo_1_no_bg.png" alt="Logo" width="100" style="vertical-align:middle; margin-right:8px;"> LaZagna: 3D FPGA Architecture Exploration Tool 
+# <img src="./images/LaZagna_logo.png" alt="Logo" width="150" style="vertical-align:middle; ">LaZagna: 3D FPGA Architecture Exploration Tool 
 
 > ⚠️ **Note**: Tutorials and documentation website are currently under development. :construction_worker: :construction:
 
