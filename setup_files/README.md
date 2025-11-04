@@ -5,8 +5,7 @@ This document explains how to configure LaZagna using YAML files.
 
 ## Configuration Basics
 
-LaZagna uses a YAML configuration file to define parameters for your FPGA fabric design. The system loads default values from `default_options.yaml` for any parameters not explicitly specified in your configuration.
-
+LaZagna uses a YAML configuration file to define parameters for your FPGA fabric design. 
 ## Parameters by Category
 
 ### FPGA Fabric Dimensions
