@@ -6,7 +6,7 @@
 # Read verilog files
 read_verilog ${READ_VERILOG_OPTIONS} ${VERILOG_FILES}
 # Read technology library
-read_verilog -lib -specify {YOSYS_BRAM_CELL_SIM}
+read_verilog -lib -specify ${YOSYS_BRAM_CELL_SIM}
 
 #########################
 # Prepare for synthesis
@@ -44,12 +44,12 @@ opt_clean
 memory_dff
 wreduce t:$mul
 
-techmap -map +/mul2dsp.v -map {YOSYS_DSP_MAP} -D DSP_A_MAXWIDTH=27 -D DSP_B_MAXWIDTH=27 -D DSP_A_MINWIDTH=18 -D DSP_B_MINWIDTH=18 -D DSP_NAME=mult_27x27
+techmap -map +/mul2dsp.v -map ${YOSYS_DSP_MAP} -D DSP_A_MAXWIDTH=27 -D DSP_B_MAXWIDTH=27 -D DSP_A_MINWIDTH=18 -D DSP_B_MINWIDTH=18 -D DSP_NAME=mult_27x27
 
 chtype -map $__soft_mul $mul # Extract arithmetic functions
 wreduce t:$mul
 
-techmap -map +/mul2dsp.v -map {YOSYS_DSP_MAP} -D DSP_A_MAXWIDTH=18 -D DSP_B_MAXWIDTH=19 -D DSP_A_MINWIDTH=2 -D DSP_B_MINWIDTH=2 -D DSP_NAME=mult_18x19
+techmap -map +/mul2dsp.v -map ${YOSYS_DSP_MAP} -D DSP_A_MAXWIDTH=18 -D DSP_B_MAXWIDTH=19 -D DSP_A_MINWIDTH=2 -D DSP_B_MINWIDTH=2 -D DSP_NAME=mult_18x19
 
 select a:mul2dsp
 setattr -unset mul2dsp
@@ -72,8 +72,8 @@ opt -fast -nodffe -nosdff
 memory -nomap
 opt_clean
 
-memory_bram -rules {YOSYS_BRAM_TXT}
-techmap -map {YOSYS_BRAM_MAP}
+memory_bram -rules ${YOSYS_BRAM_TXT}
+techmap -map ${YOSYS_BRAM_MAP}
 stat
 opt -fast -mux_undef -undriven -fine -nodffe -nosdff
 memory_map
