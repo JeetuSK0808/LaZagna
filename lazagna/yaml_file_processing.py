@@ -78,7 +78,7 @@ def load_param_ranges(yaml_file: str) -> Dict:
         params['linked_params']['sb_location_pattern'] = []
         for location in params['sb_location_pattern']:
             if location == 'custom':
-                params['linked_params']['sb_location_pattern'].extend([{'sb_location_pattern': location, 'sb_grid_csv_path': i} for i in params['sb_grid_csv_path']])
+                params['linked_params']['sb_location_pattern'].extend([{'sb_location_pattern': location, 'sb_grid_csv_path': i.replace('{lazagna_root}', LAZAGNA_ROOT)} for i in params['sb_grid_csv_path']])
             else:
                 params['linked_params']['sb_location_pattern'].append({'sb_location_pattern': location, 'sb_grid_csv_path': ''})
         

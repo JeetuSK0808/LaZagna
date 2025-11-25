@@ -23,6 +23,9 @@ def run_one_benchmark(i, blif_file="", verilog_file="", act_file="", original_di
         command = ["cp", temp_template_dir + "/task/designs/bitstream_script.openfpga", temp_template_dir + "/task/designs/vtr_arch.xml", temp_template_dir + "/task/designs/openfpga_arch.xml", temp_template_dir + "/task/designs/auto_sim_openfpga.xml", temp_task_dir + "/designs/"]
         run_command_in_temp_dir(command, original_dir)
 
+        command = ["cp", temp_template_dir + "/task/designs/yosys.ys", temp_template_dir + "/task/designs/bram_cell_sim.v", temp_template_dir + "/task/designs/bram_map.v",temp_template_dir + "/task/designs/bram.txt",temp_template_dir + "/task/designs/complex_dsp.v",temp_template_dir + "/task/designs/dsp_map.v", temp_task_dir + "/designs/"]
+        run_command_in_temp_dir(command, original_dir)
+
         # design_variables file
         command = ["cp", temp_template_dir + "/task/design_variables.yml", temp_task_dir]
         run_command_in_temp_dir(command, original_dir)

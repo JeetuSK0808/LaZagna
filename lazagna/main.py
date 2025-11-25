@@ -86,6 +86,9 @@ def main():
 
     print(f"Running {len(run_params)} jobs in parallel using {num_workers} workers")
         
+    num_task_workers = args.num_task_workers
+    for param in run_params:
+        param['num_task_workers'] = num_task_workers
     
     # Run jobs in parallel using ProcessPoolExecutor
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
