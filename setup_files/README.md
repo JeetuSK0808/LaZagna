@@ -14,9 +14,9 @@ LaZagna uses a YAML configuration file to define parameters for your FPGA fabric
 |-----------|------|-------------|---------|
 | `width` | integer | Width of the 3D FPGA fabric | `50` |
 | `height` | integer | Height of the 3D FPGA fabric | `50` |
-| `width_2d` | integer | Width of 2D FPGA fabric (when comparing to 3D) | `70` |
-| `height_2d` | integer | Height of 2D FPGA fabric (when comparing to 3D) | `70` |
-| `channel_width` | integer | Channel width for the FPGA fabric (2D only) | `100` |
+| `width_2d` | integer | Width of 2D FPGA fabric (only applicable if `type_sb == '2d'`) | `70` |
+| `height_2d` | integer | Height of 2D FPGA fabric (only applicable if `type_sb == '2d'`) | `70` |
+| `channel_width` | integer | Channel width for the FPGA fabric | `100` |
 
 ### 3D Connectivity Configuration
 
