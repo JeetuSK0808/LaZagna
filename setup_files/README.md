@@ -5,8 +5,7 @@ This document explains how to configure LaZagna using YAML files.
 
 ## Configuration Basics
 
-LaZagna uses a YAML configuration file to define parameters for your FPGA fabric design. The system loads default values from `default_options.yaml` for any parameters not explicitly specified in your configuration.
-
+LaZagna uses a YAML configuration file to define parameters for your FPGA fabric design. 
 ## Parameters by Category
 
 ### FPGA Fabric Dimensions
@@ -15,9 +14,9 @@ LaZagna uses a YAML configuration file to define parameters for your FPGA fabric
 |-----------|------|-------------|---------|
 | `width` | integer | Width of the 3D FPGA fabric | `50` |
 | `height` | integer | Height of the 3D FPGA fabric | `50` |
-| `width_2d` | integer | Width of 2D FPGA fabric (when comparing to 3D) | `70` |
-| `height_2d` | integer | Height of 2D FPGA fabric (when comparing to 3D) | `70` |
-| `channel_width` | integer | Channel width for the FPGA fabric (2D only) | `100` |
+| `width_2d` | integer | Width of 2D FPGA fabric (only applicable if `type_sb == '2d'`) | `70` |
+| `height_2d` | integer | Height of 2D FPGA fabric (only applicable if `type_sb == '2d'`) | `70` |
+| `channel_width` | integer | Channel width for the FPGA fabric | `100` |
 
 ### 3D Connectivity Configuration
 

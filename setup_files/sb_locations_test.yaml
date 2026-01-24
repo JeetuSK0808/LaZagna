@@ -1,14 +1,14 @@
-width: 100
+width: 10
 
-height: 100 
+height: 10 
 
-width_2d: 141
+width_2d: 15
 
-height_2d: 141
+height_2d: 15
 
-channel_width: 300
+channel_width: 50
 
-percent_connectivity: [0.5]
+percent_connectivity: [1]
 
 place_algorithm: ["cube_bb"]
 
@@ -19,20 +19,19 @@ linked_params:
     - type_sb: "combined"
       arch_file: "{lazagna_root}/arch_files/templates/dsp_bram/vtr_arch_dsp_bram.xml"
 
-
 num_seeds: 1
 
 random_seed: False
 
 non_random_seed: 1
 
-additional_vpr_options: "--inner_num 0.5"
+additional_vpr_options: ""
 
-cur_loop_identifier: "sb_location_run"
+cur_loop_identifier: "sb_locations_test"
 
-is_verilog_benchmarks: True
+is_verilog_benchmarks: False
 
-benchmarks_dir: "{lazagna_root}/benchmarks/ITD_quick"
+benchmarks_dir: "{lazagna_root}/benchmarks/and2_or2"
 
 vertical_connectivity: 1 
 
@@ -44,11 +43,11 @@ sb_input_pattern: []
 
 sb_output_pattern: []
 
-sb_location_pattern: ["repeated_interval", "random"]
+sb_location_pattern: ["custom"]
 
-sb_grid_csv_path: ""
+sb_grid_csv_path: ["{lazagna_root}/setup_files/csv_patterns/rows_10x10_pattern.csv"]
 
-vertical_delay_ratio: [1]
+vertical_delay_ratio: [0.739]
 
 base_delay_switch: "L4_driver"
 

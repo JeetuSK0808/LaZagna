@@ -1,14 +1,14 @@
-width: 100
+width: 10
 
-height: 100 
+height: 10 
 
-width_2d: 141
+width_2d: 15
 
-height_2d: 141
+height_2d: 15
 
-channel_width: 300
+channel_width: 50
 
-percent_connectivity: [1,0.66,0.33]
+percent_connectivity: [1]
 
 place_algorithm: ["cube_bb"]
 
@@ -16,18 +16,19 @@ connection_type: ["subset"]
 
 linked_params:
   type_sb_arch_mapping:
-    - type_sb: "combined"
-      arch_file: "{lazagna_root}/arch_files/templates/dsp_bram/vtr_arch_dsp_bram.xml"
     - type_sb: "3d_cb"
       arch_file: "{lazagna_root}/arch_files/templates/dsp_bram/vtr_3d_cb_arch_dsp_bram.xml"
+    - type_sb: "combined"
+      arch_file: "{lazagna_root}/arch_files/templates/dsp_bram/vtr_arch_dsp_bram.xml"
     - type_sb: "3d_cb_out_only"
       arch_file: "{lazagna_root}/arch_files/templates/dsp_bram/vtr_3d_cb_out_only_arch_dsp_bram.xml"
     - type_sb: "hybrid_cb"
       arch_file: "{lazagna_root}/arch_files/templates/dsp_bram/vtr_3d_cb_arch_dsp_bram.xml"
-    - type_sb: "hybrid_cb_out"
+    - type_sb: "hybrid_cb_out_only"
       arch_file: "{lazagna_root}/arch_files/templates/dsp_bram/vtr_3d_cb_out_only_arch_dsp_bram.xml"
     - type_sb: "2d"
-      arch_file: "{lazagna_root}/arch_files/templates/dsp_bram/vtr_2d_arch_dsp_bram.xml"
+      arch_file: "{lazagna_root}/arch_files/templates/dsp_bram/vtr_3d_cb_arch_dsp_bram.xml"
+    
 
 num_seeds: 1
 
@@ -35,13 +36,13 @@ random_seed: False
 
 non_random_seed: 1
 
-additional_vpr_options: "--inner_num 0.5"
+additional_vpr_options: ""
 
-cur_loop_identifier: "VD_Ratio_Test"
+cur_loop_identifier: "connectivity_types_test"
 
-is_verilog_benchmarks: True
+is_verilog_benchmarks: False
 
-benchmarks_dir: "{lazagna_root}/benchmarks/and2"
+benchmarks_dir: "{lazagna_root}/benchmarks/and2_or2"
 
 vertical_connectivity: 1 
 

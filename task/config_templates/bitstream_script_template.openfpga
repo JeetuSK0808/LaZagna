@@ -8,18 +8,21 @@ read_openfpga_simulation_setting -f ${OPENFPGA_SIM_SETTING_FILE}
 #
 ## Annotate the OpenFPGA architecture to VPR data base
 ## to debug use --verbose options
-link_openfpga_arch --3d_sb --skip_link_routing_results #--sort_gsb_chan_node_in_edges
+link_openfpga_arch --3d_sb #--sort_gsb_chan_node_in_edges --3d_sb
 #
 ## Check and correct any naming conflicts in the BLIF netlist
 check_netlist_naming_conflict --fix --report ./netlist_renaming.xml
 #
+# Apply fix-up to clustering nets based on routing results
+pb_pin_fixup --verbose
+
+## Apply fix-up to Look-Up Table truth tables based on packing results
+lut_truth_table_fixup
 ## Build the module graph
 ##  - Enabled compression on routing architecture modules
 ##  - Enable pin duplication on grid modules
 build_fabric --compress_routing #--verbose
 #
-## Apply fix-up to Look-Up Table truth tables based on packing results
-lut_truth_table_fixup
 #
 #
 ## Write the fabric hierarchy of module graph to a file
@@ -31,17 +34,17 @@ write_fabric_verilog --file ${OPENFPGA_VERILOG_OUTPUT_DIR}/SRC --explicit_port_m
 ## Repack the netlist to physical pbs
 ## This must be done before bitstream generator and testbench generation
 ## Strongly recommend it is done after all the fix-up have been applied
-#repack #--verbose
+repack #--verbose
 #
 ## Build the bitstream
 ##  - Output the fabric-independent bitstream to a file
-#build_architecture_bitstream --verbose --write_file fabric_independent_bitstream.xml
+build_architecture_bitstream --verbose --write_file fabric_independent_bitstream.xml
 #
 ## Build fabric-dependent bitstream
-#build_fabric_bitstream #--verbose
+build_fabric_bitstream --verbose
 #
 ## Write fabric-dependent bitstream
-#write_fabric_bitstream --file ${OPENFPGA_VERILOG_OUTPUT_DIR}/SRC/fabric_bitstream.bit --format plain_text
+write_fabric_bitstream --file ${OPENFPGA_VERILOG_OUTPUT_DIR}/SRC/fabric_bitstream.bit --format plain_text
 #
 ## Write the Verilog testbench for FPGA fabric
 ##  - We suggest the use of same output directory as fabric Verilog netlists
@@ -55,7 +58,7 @@ write_fabric_verilog --file ${OPENFPGA_VERILOG_OUTPUT_DIR}/SRC --explicit_port_m
 ##write_analysis_sdc --file ./SDC_analysis
 #
 ## Finish and exit OpenFPGA
-#exit
+exit
 #
 ## Note :
 ## To run verification at the end of the flow maintain source in ./SRC directory

@@ -1,14 +1,14 @@
-width: 20
+width: 10
 
-height: 20 
+height: 10 
 
-width_2d: 141
+width_2d: 15
 
-height_2d: 141
+height_2d: 15
 
-channel_width: 100
+channel_width: 50
 
-percent_connectivity: [1]
+percent_connectivity: [1, 0.66, 0.33]
 
 place_algorithm: ["cube_bb"]
 
@@ -16,24 +16,22 @@ connection_type: ["subset"]
 
 linked_params:
   type_sb_arch_mapping:
-    - type_sb: "hybrid_cb"
-      arch_file: "{lazagna_root}/arch_files/templates/dsp_bram/vtr_3d_cb_arch_dsp_bram.xml"
-    - type_sb: "2d"
-      arch_file: "{lazagna_root}/arch_files/templates/dsp_bram/vtr_3d_cb_arch_dsp_bram.xml"
+    - type_sb: "combined"
+      arch_file: "{lazagna_root}/arch_files/templates/dsp_bram/vtr_arch_dsp_bram.xml"
 
 num_seeds: 1
 
-random_seed: True
+random_seed: False
 
 non_random_seed: 1
 
-additional_vpr_options: "--inner_num 0.5"
+additional_vpr_options: ""
 
-cur_loop_identifier: "hybrid_rtl_test"
+cur_loop_identifier: "sb_percentage_test"
 
 is_verilog_benchmarks: False
 
-benchmarks_dir: "{lazagna_root}/benchmarks/MCNC_benchmarks"
+benchmarks_dir: "{lazagna_root}/benchmarks/and2_or2"
 
 vertical_connectivity: 1 
 
@@ -49,7 +47,7 @@ sb_location_pattern: ["repeated_interval"]
 
 sb_grid_csv_path: ""
 
-vertical_delay_ratio: [1]
+vertical_delay_ratio: [0.739]
 
 base_delay_switch: "L4_driver"
 

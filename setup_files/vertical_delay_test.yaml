@@ -1,18 +1,18 @@
-width: 100
+width: 10
 
-height: 100 
+height: 10 
 
-width_2d: 141
+width_2d: 15
 
-height_2d: 141
+height_2d: 15
 
-channel_width: 300
+channel_width: 50
 
-percent_connectivity: [1, 0.66, 0.33]
+percent_connectivity: [1]
 
-place_algorithm: ["cube_bb", "per_layer_bb"]
+place_algorithm: ["cube_bb"]
 
-connection_type: ["subset", "wilton_2"]
+connection_type: ["subset"]
 
 linked_params:
   type_sb_arch_mapping:
@@ -21,15 +21,19 @@ linked_params:
 
 num_seeds: 1
 
-additional_vpr_options: "--inner_num 0.5"
+random_seed: False
 
-cur_loop_identifier: "vertical_delay_ratio_test_sb_fixed_delay"
+non_random_seed: 1
 
-is_verilog_benchmarks: True
+additional_vpr_options: ""
 
-benchmarks_dir: "{lazagna_root}/benchmarks/ITD_quick"
+cur_loop_identifier: "vertical_delay_test"
 
-vertical_connectivity: 1
+is_verilog_benchmarks: False
+
+benchmarks_dir: "{lazagna_root}/benchmarks/and2_or2"
+
+vertical_connectivity: 1 
 
 sb_switch_name: "3D_SB_switch"
 
@@ -39,11 +43,11 @@ sb_input_pattern: []
 
 sb_output_pattern: []
 
-sb_location_pattern: "repeated_interval"
+sb_location_pattern: ["repeated_interval"]
 
 sb_grid_csv_path: ""
 
-vertical_delay_ratio: [0.5, 1, 2, 5, 10]
+vertical_delay_ratio: [0.5, 1.0, 2.0, 3.0, 4.0, 5.0]
 
 base_delay_switch: "L4_driver"
 
