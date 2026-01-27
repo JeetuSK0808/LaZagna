@@ -4,7 +4,7 @@
 MAKEFLAGS =
 
 # Default target, run all tasks
-all: init build
+all: build
 
 prereqs:
 	./install_apt_packages.sh
@@ -14,7 +14,7 @@ init:
 	git submodule update --init --recursive
 
 # Build OpenFPGA
-build:
+build: init
 	cd OpenFPGA && $(MAKE) $(MAKEFLAGS) all
 	echo "LaZagna Build complete."
 
