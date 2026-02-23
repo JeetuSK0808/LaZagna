@@ -1,0 +1,34 @@
+/* Custom styling for LaZagna documentation */
+
+/* Logo styling in the sidebar */
+.wy-side-nav-search img.logo {
+    max-width: 180px;
+    margin: 0 auto;
+    display: block;
+}
+
+/* Project name next to logo */
+.wy-side-nav-search > a {
+    font-size: 1.4em;
+    font-weight: bold;
+}
+
+/* Admonition styling */
+.admonition.tip {
+    border-left-color: #1abc9c;
+}
+
+/* YAML code block styling */
+div.highlight-yaml .highlight {
+    background: #f8f8f8;
+}
+
+/* Table styling improvements */
+.rst-content table.docutils td,
+.rst-content table.docutils th {
+    padding: 8px 12px;
+}
+
+.rst-content table.docutils {
+    width: 100%;
+}

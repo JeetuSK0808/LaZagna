@@ -1,62 +1,22 @@
-width: 10
+# ============================================================
+# LaZagna Setup — SB Pattern Test
+# ============================================================
+# Tests different custom switch-block turn patterns.
+# Each pattern defines input/output turn offsets [N, E, S, W].
+# Patterns are swept as linked parameters (each pair tested
+# independently, not as a Cartesian product).
+# ============================================================
 
-height: 10 
+experiment_name: "sb_pattern_test"
 
-width_2d: 15
-
-height_2d: 15
-
-channel_width: 50
-
-percent_connectivity: [1]
-
-place_algorithm: ["cube_bb"]
-
-connection_type: ["custom"]
-
-linked_params:
-  type_sb_arch_mapping:
-    - type_sb: "combined"
-      arch_file: "{lazagna_root}/arch_files/templates/dsp_bram/vtr_arch_dsp_bram.xml"
-
-num_seeds: 1
-
-random_seed: False
-
-non_random_seed: 1
-
-additional_vpr_options: ""
-
-cur_loop_identifier: "sb_pattern_test"
-
-is_verilog_benchmarks: False
-
-benchmarks_dir: "{lazagna_root}/benchmarks/and2_or2"
-
-vertical_connectivity: 1 
-
-sb_switch_name: "3D_SB_switch"
-
-sb_segment_name: "3D_SB_connection"
-
-sb_pattern: [
-  [[0,0,0,0],[0,0,0,0]], # subset
-  [[0,1,2,3],[0,1,2,3]], # wilton 1
-  [[0,0,0,0],[0,1,2,3]], # wilton 2
-  [[0,0,0,0],[1,1,1,1]], # offset
-]
-
-sb_location_pattern: ["repeated_interval"]
-
-sb_grid_csv_path: ""
-
-vertical_delay_ratio: [0.739]
-
-base_delay_switch: "L4_driver"
-
-switch_interlayer_pairs:
-  L4_driver: "L4_inter_layer_driver"
-  L16_driver: "L16_inter_layer_driver"
-  ipin_cblock: "ipin_inter_layer_cblock"
-
-update_arch_delay: True
+switch_block_3d:
+  connection_type: ["custom"]
+  custom_patterns:
+    - input:  [0, 0, 0, 0]     # subset
+      output: [0, 0, 0, 0]
+    - input:  [0, 1, 2, 3]     # wilton variant 1
+      output: [0, 1, 2, 3]
+    - input:  [0, 0, 0, 0]     # wilton variant 2
+      output: [0, 1, 2, 3]
+    - input:  [0, 0, 0, 0]     # offset
+      output: [1, 1, 1, 1]
