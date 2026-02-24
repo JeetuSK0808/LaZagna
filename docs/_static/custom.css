@@ -2,7 +2,8 @@
 
 /* Logo styling in the sidebar */
 .wy-side-nav-search img.logo {
-    max-width: 180px;
+    max-height: 150px;
+    width: auto;
     margin: 0 auto;
     display: block;
 }
@@ -11,6 +12,7 @@
 .wy-side-nav-search > a {
     font-size: 1.4em;
     font-weight: bold;
+    color: #373636 !important;
 }
 
 /* Admonition styling */

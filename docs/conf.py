@@ -57,12 +57,13 @@ html_theme = "sphinx_rtd_theme"
 html_theme_options = {
     'logo_only': False,
     'prev_next_buttons_location': 'bottom',
-    'style_nav_header_background': '#2c3e50',
+    'style_nav_header_background': "#DCEFF9",
     'navigation_depth': 4,
 }
 
 # -- Logo configuration -----------------------------------------------------
-html_logo = "_static/LaZagna_logo.png"
+html_logo = "_static/LaZagna_logo_no_text.png"
+html_favicon = "_static/LaZagna_logo_no_text.png"
 
 html_static_path = ['_static']
 
