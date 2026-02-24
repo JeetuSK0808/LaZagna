@@ -1,8 +1,10 @@
 # LaZagna: 3D FPGA Architecture Exploration Tool <img src="./images/LaZagna_logo.png" alt="Logo" width="100" style="vertical-align:middle; ">
 
-> ⚠️ **Note**: Tutorials and documentation website are currently under development. 🏗️
+LaZagna is an open-source tool for designing and evaluating **3D FPGA architectures**. It supports customizable vertical interconnects, layer heterogeneity, and switch block patterns. LaZagna generates synthesizable RTL and bitstreams through a modified version of [OpenFPGA](https://github.com/lnis-uofu/OpenFPGA), enabling full 3D FPGA architectural exploration from high-level specs to physical design.
 
-LaZagna is an open-source tool for designing and evaluating **3D FPGA architectures**. It supports customizable vertical interconnects, layer heterogeneity, and switch block patterns. LaZagna generates synthesizable RTL and bitstreams through [OpenFPGA](https://github.com/lnis-uofu/OpenFPGA), enabling full architectural exploration from high-level specs to physical design.
+---
+## Documentation
+LaZagna's [documentation website](https://lazagna.readthedocs.io/en/latest/) describes how to use and build the tool. 
 
 ---
 
