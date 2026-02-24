@@ -71,3 +71,6 @@ html_css_files = [
     'custom.css',
 ]
 
+html_meta = {
+    "google-site-verification": "5uYL2zxvfApE3cJZt6uJhpQrRXyckmgSj6u7YvS3TEo",
+}
