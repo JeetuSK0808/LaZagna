@@ -267,7 +267,7 @@ def run_interface(params):
                         place_algorithm=params['place_algorithm'],                        # placement algorithm
                         verilog_benchmarks=params['is_verilog_benchmarks'],              # using verilog benchmarks?
                         connection_type=params['connection_type'],                        # connection type
-                        benchmark_top_name=params['top_module_names'].get(os.path.basename(params['verilog_files'][i]), ""), # top module name
+                        benchmark_top_name=params['top_module_names'].get(os.path.basename(params['verilog_files'][i])) or extract_file_name(params['verilog_files'][i]), # top module name
                         output_folder_name=task_run_folder,                                # output folder
                         run_number=params['run_num'],                                     # run number
                         output_additional_info=output_identifier,             # additional info

@@ -830,16 +830,19 @@ def run_lazagna(arch: Architecture, opts: ExperimentOptions, lazagna_root: Optio
     import os
     import subprocess
     import tempfile
+    import hashlib
     import yaml
 
     root = lazagna_root or os.environ.get("LAZAGNA_ROOT", ".")
 
     with tempfile.TemporaryDirectory() as tmp:
-        arch_path = os.path.join(tmp, "arch.xml")
+        arch_xml = arch if isinstance(arch, str) else arch.to_xml()
+        arch_hash = hashlib.sha1(arch_xml.encode("utf-8")).hexdigest()[:12]
+        arch_path = os.path.join(tmp, "arch_" + arch_hash + ".xml")
         yaml_path = os.path.join(tmp, "experiment.yaml")
 
         with open(arch_path, "w") as f:
-            f.write(arch if isinstance(arch, str) else arch.to_xml())
+            f.write(arch_xml)
 
         config = opts.to_dict()
         config["arch_file"] = arch_path

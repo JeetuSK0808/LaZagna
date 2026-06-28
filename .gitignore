@@ -44,3 +44,64 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# ============================================================================
+# Session scratch (added) — NOT for the fork. Deliverables: see UPLOAD_MANIFEST.md
+# Deletes nothing; only prevents accidental `git add` of scratch.
+# ============================================================================
+
+# Study state / databases and result dumps
+*.db
+*.json
+
+# Backups
+*.bak
+*.bak.*
+
+# Scratch driver / probe / helper scripts (NOT core deliverables)
+patch_arch_model.py
+run_koios_columns_demo.py
+run_koios_columns_study.py
+run_eltwise_placement_study.py
+run_sampler_comparison.py
+synth_probe.sh
+
+# Scratch reports / notes (markdown) — none go on the fork
+BUG3_DIAGNOSIS.md
+BUG3_FIX_FINAL.md
+CLUSTER_HANDOFF.md
+COLUMNS_STUDY_RESULTS.md
+ISMAEL_EMAIL_DRAFT.md
+KOIOS_VIABILITY.md
+LAZAGNA_HANDOFF.md
+LAZAGNA_SESSION_UPDATE.md
+SAMPLER_COMPARISON.md
+SESSION_REPORT.md
+UPLOAD_MANIFEST.md
+
+# VPR / flow scratch outputs in repo root
+*.net
+*.net.post_routing
+*.place
+*.route
+*.rpt
+*_timing*.txt
+build_log.txt
+delay_model.txt
+alu4.*
+
+# Scratch benchmark folders (isolation/test copies; real suites are untracked anyway)
+benchmarks/koios_dsp/
+benchmarks/koios_elt/
+benchmarks/koios_conv/
+benchmarks/koios_lstm/
+benchmarks/koios_hb/
+benchmarks/koios_red/
+benchmarks/koios_small/
+benchmarks/koios_test/
+benchmarks/koios_proxy/
+
+# Scratch setup YAMLs (probe / isolation configs)
+setup_files/koios_*.yaml
+setup_files/vertical_sweep*.yaml
+setup_files/simple_test_koios.yaml

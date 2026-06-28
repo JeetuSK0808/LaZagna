@@ -105,6 +105,24 @@ class LayoutSpec:
         _fill_interior(grid, block_for)
         return grid
 
+@dataclass
+class ColumnLayoutSpec:
+    columns: list[list[str]]
+
+    def build(self, width: int, height: int) -> list[list[list[str]]]:
+        n_interior = width - 2
+        if len(self.columns) != 2 or any(len(c) != n_interior for c in self.columns):
+            raise ValueError(f"need 2 layers x {n_interior} interior columns")
+        grid = _blank(2, height, width)
+
+        def block_for(layer: int, x: int, y: int) -> str:
+            return self.columns[layer][x - 1]
+
+        _fill_interior(grid, block_for)
+        _stamp_perimeter(grid)
+        return grid
+
+
 NAMED_LAYOUTS: dict[str, LayoutSpec] = {
     "aligned":  LayoutSpec(family="distributed", hb_period=8, asymmetry=0.0),
     "offset":   LayoutSpec(family="distributed", hb_period=8, asymmetry=0.25),

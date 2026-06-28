@@ -1,7 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
-import csv
 import glob
 import math
 import os
@@ -9,66 +8,16 @@ import os
 import optuna
 
 from lazagna_arch_model import (
-    Port, Direct, Mux, Mode, DelayConstant, TSetup, TClockToQ, PbType,
-    FixedLayout, Layout, Sizing, SwitchBlock, Device, Switch, Segment,
-    Architecture, ExperimentOptions, GridOptions, BenchmarkOptions,
-    PlacementOptions, SeedOptions, SwitchBlock3DOptions, InterlayerDelayOptions,
-    run_lazagna,
+    ExperimentOptions, GridOptions, BenchmarkOptions, PlacementOptions,
+    SeedOptions, SwitchBlock3DOptions, InterlayerDelayOptions, run_lazagna,
 )
-from layout_space import LayoutSpec, NAMED_LAYOUTS, CLB, DSP, BRAM, IO
+from layout_space import LayoutSpec, ColumnLayoutSpec, NAMED_LAYOUTS, CLB, DSP, BRAM, IO
 from arch_from_template import render_arch_from_template
-
-def _clb() -> PbType:
-    lut6 = PbType.primitive(
-        name="lut6", blif_model=".names",
-        inputs=[Port("in", num_pins=6)], outputs=[Port("out", num_pins=1)],
-        timing=[DelayConstant(in_port="lut6.in", out_port="lut6.out", max=261e-12)],
-    )
-    ff = PbType.primitive(
-        name="ff", blif_model=".latch",
-        inputs=[Port("D")], outputs=[Port("Q")], clocks=[Port("clk")],
-        timing=[TSetup(port="ff.D", clock="clk", value=66e-12),
-                TClockToQ(port="ff.Q", clock="clk", max=124e-12)],
-    )
-    return PbType.container(
-        name="clb",
-        inputs=[Port("I", num_pins=10)], outputs=[Port("O", num_pins=4)], clocks=[Port("clk")],
-        children=[lut6, ff],
-        interconnect=[
-            Direct("lut_in", input="clb.I[0:5]", output="lut6.in[0:5]"),
-            Direct("ff_in", input="lut6.out[0]", output="ff.D[0]"),
-            Mux("clb_out", input="lut6.out[0] ff.Q[0]", output="clb.O[0]"),
-        ],
-    )
-
-def _io() -> PbType:
-    inpad = PbType.primitive(name="inpad", blif_model=".input", inputs=[], outputs=[Port("inpad")])
-    outpad = PbType.primitive(name="outpad", blif_model=".output", inputs=[Port("outpad")], outputs=[])
-    return PbType(
-        name="io", num_pb=8,
-        input_ports=[Port("outpad")], output_ports=[Port("inpad")],
-        pin_placement="all_sides",
-        modes=[
-            Mode(name="inpad", children=[inpad],
-                 interconnect=[Direct("io_inpad", input="inpad.inpad", output="io.inpad")]),
-            Mode(name="outpad", children=[outpad],
-                 interconnect=[Direct("io_outpad", input="io.outpad", output="outpad.outpad")]),
-        ],
-    )
 
 def build_architecture(spec: LayoutSpec, width: int, height: int, template_path: str) -> str:
 
     return render_arch_from_template(template_path, spec, width, height)
 
-CPD_KEYS = ("critical_path", "critical_path_delay", "crit_path_delay", "cpd")
-WL_KEYS = ("total_wire_length", "total_wirelength", "wire_length", "wirelength", "routed_wirelength")
-
-def _match(headers: list[str], keys: tuple[str, ...]) -> Optional[str]:
-    norm = {h: h.strip().lower().replace(" ", "_") for h in headers}
-    for h, n in norm.items():
-        if any(k.replace(" ", "_") in n for k in keys):
-            return h
-    return None
 
 import re as _re
 
@@ -95,13 +44,11 @@ def parse_results(results_dir: str, only_containing: Optional[str] = None) -> Op
             if "_vp_" not in folder:
                 return False
             before = folder.split("_vp_")[0]
-            return before.endswith("_" + only_containing) or before == only_containing
+            return only_containing in before.split("_")
         matched = [l for l in logs if _exp_matches(l)]
         if not matched:
             return None
-        matched.sort(key=lambda l: os.path.getmtime(l), reverse=True)
-        newest_folder = matched[0].split("/task_")[0]
-        logs = [l for l in matched if l.startswith(newest_folder)]
+        logs = matched
     if not logs:
         return None
 
@@ -148,15 +95,25 @@ class SearchConfig:
     channel_width: int = 100
     seeds: int = 1
     arch_type: str = "3d_sb"
+    search_mode: str = "layout"
+    sampler: str = "tpe"
+    parallel: bool = False
 
     run_tag: str = field(default_factory=lambda: "run" + str(int(__import__("time").time())))
 
     template_path: str = "arch_files/vtr_3d_cb_arch_dsp_bram_10x10_delay_ratio_0.739.xml"
+    template_2d_path: str = "arch_files/templates/dsp_bram/vtr_2d_arch_dsp_bram.xml"
 
     hb_period_choices: tuple[int, ...] = (4, 6, 8, 12)
     edge_fraction_range: tuple[float, float] = (0.1, 0.35)
     delay_ratio_range: tuple[float, float] = (0.4, 1.2)
     connectivity_choices: tuple[float, ...] = (0.33, 0.66, 1.0)
+    column_block_choices: tuple[str, ...] = (CLB, DSP, BRAM)
+    clb_col_fraction: float = 0.68
+    dsp_col_fraction: float = 0.10
+    type_sb_choices: tuple[str, ...] = ("3d_sb",)
+    connection_type_choices: tuple[str, ...] = ("subset",)
+    fine_connectivity_choices: tuple[float, ...] = (0.1, 0.2, 0.33, 0.5, 0.66, 0.8, 1.0)
 
 def sample_layout(trial: optuna.Trial, cfg: SearchConfig) -> LayoutSpec:
     family = trial.suggest_categorical("family", ["distributed", "edge"])
@@ -168,14 +125,47 @@ def sample_layout(trial: optuna.Trial, cfg: SearchConfig) -> LayoutSpec:
     frac = trial.suggest_float("edge_fraction", *cfg.edge_fraction_range)
     return LayoutSpec(family=family, edge_fraction=frac, asymmetry=asymmetry, separate_dsp_bram=separate)
 
+
+def sample_columns(trial: optuna.Trial, cfg: SearchConfig) -> ColumnLayoutSpec:
+    n_interior = cfg.width - 2
+    dsp_hi = cfg.clb_col_fraction + cfg.dsp_col_fraction
+    cols = []
+    for layer in range(2):
+        layer_cols = []
+        for i in range(n_interior):
+            r = trial.suggest_float(f"L{layer}c{i}", 0.0, 1.0)
+            if r < cfg.clb_col_fraction:
+                layer_cols.append(CLB)
+            elif r < dsp_hi:
+                layer_cols.append(DSP)
+            else:
+                layer_cols.append(BRAM)
+        cols.append(layer_cols)
+    return ColumnLayoutSpec(columns=cols)
+
+
+def sample_connectivity(trial: optuna.Trial, cfg: SearchConfig):
+    type_sb = trial.suggest_categorical("type_sb", list(cfg.type_sb_choices))
+    if type_sb in ("2d", "3d_cb", "3d_cb_out_only"):
+        connectivity = 1.0
+        connection_type = "subset"
+    else:
+        connectivity = trial.suggest_categorical("connectivity", list(cfg.fine_connectivity_choices))
+        connection_type = trial.suggest_categorical("connection_type", list(cfg.connection_type_choices)) \
+            if len(cfg.connection_type_choices) > 1 else cfg.connection_type_choices[0]
+    delay_ratio = trial.suggest_float("delay_ratio", *cfg.delay_ratio_range)
+    return type_sb, connectivity, connection_type, delay_ratio
+
 def _run_one(cfg: SearchConfig, spec_or_none, exp_name: str, arch_type: str,
-             connectivity: float, delay_ratio: float):
-    """Run a single LaZagna config and return (cpd, wl) parsed from THIS run's
-    output dir only. spec_or_none=None means 2D (layout still rendered but type=2d)."""
-    template = os.path.join(cfg.lazagna_root, cfg.template_path)\
-        if not os.path.isabs(cfg.template_path) else cfg.template_path
+             connectivity: float, delay_ratio: float, connection_type: str = "subset"):
+    is_2d = arch_type == "2d"
+    tpl = cfg.template_2d_path if is_2d else cfg.template_path
+    template = os.path.join(cfg.lazagna_root, tpl)\
+        if not os.path.isabs(tpl) else tpl
     spec = spec_or_none if spec_or_none is not None else NAMED_LAYOUTS["aligned"]
-    arch = build_architecture(spec, cfg.width, cfg.height, template)
+    arch_w = cfg.width_2d if is_2d else cfg.width
+    arch_h = cfg.height_2d if is_2d else cfg.height
+    arch = build_architecture(spec, arch_w, arch_h, template)
 
     opts = ExperimentOptions(
         experiment_name=exp_name,
@@ -185,7 +175,8 @@ def _run_one(cfg: SearchConfig, spec_or_none, exp_name: str, arch_type: str,
         benchmarks=BenchmarkOptions(directory=cfg.benchmark_dir, is_verilog=cfg.is_verilog),
         placement=PlacementOptions(algorithm=["cube_bb"]),
         seeds=SeedOptions(mode="fixed" if cfg.seeds == 1 else "random", value=cfg.seeds),
-        switch_block_3d=SwitchBlock3DOptions(connectivity=[connectivity]),
+        switch_block_3d=SwitchBlock3DOptions(connectivity=[connectivity],
+                                             connection_type=[connection_type]),
         interlayer_delay=InterlayerDelayOptions(delay_ratio=[delay_ratio]),
     )
     opts.architectures[0].type = arch_type
@@ -197,6 +188,18 @@ def _run_one(cfg: SearchConfig, spec_or_none, exp_name: str, arch_type: str,
     metrics = parse_results(os.path.join(cfg.lazagna_root, "results"), only_containing=exp_name)
     return metrics, None
 
+def reference_columns(cfg: SearchConfig) -> ColumnLayoutSpec:
+    n_interior = cfg.width - 2
+    pattern = []
+    for i in range(n_interior):
+        if i % 5 == 0:
+            pattern.append(BRAM)
+        elif i % 10 == 3:
+            pattern.append(DSP)
+        else:
+            pattern.append(CLB)
+    return ColumnLayoutSpec(columns=[list(pattern), list(pattern)])
+
 def make_objective(cfg: SearchConfig, block_types=None):
 
     baseline = {"cpd": None, "wl": None}
@@ -204,19 +207,31 @@ def make_objective(cfg: SearchConfig, block_types=None):
     def ensure_baseline():
         if baseline["cpd"] is not None:
             return
-        metrics, err = _run_one(cfg, None, f"{cfg.run_tag}base", "2d", 1.0, 1.0)
+        metrics, err = _run_one(cfg, reference_columns(cfg), f"{cfg.run_tag}ref", cfg.arch_type, 1.0, 0.739)
         if metrics is None:
-            raise RuntimeError(f"2D baseline run failed: {err}")
+            raise RuntimeError(f"3D-aligned reference baseline run failed: {err}")
         baseline["cpd"], baseline["wl"] = metrics
 
     def objective(trial: optuna.Trial) -> tuple[float, float]:
         ensure_baseline()
-        spec = sample_layout(trial, cfg)
-        connectivity = trial.suggest_categorical("connectivity", list(cfg.connectivity_choices))
-        delay_ratio = trial.suggest_float("delay_ratio", *cfg.delay_ratio_range)
+        if cfg.search_mode == "connectivity":
+            spec = NAMED_LAYOUTS["aligned"]
+            arch_type, connectivity, connection_type, delay_ratio = sample_connectivity(trial, cfg)
+        elif cfg.search_mode == "columns":
+            spec = sample_columns(trial, cfg)
+            arch_type = cfg.arch_type
+            connectivity = trial.suggest_categorical("connectivity", list(cfg.connectivity_choices))
+            connection_type = "subset"
+            delay_ratio = trial.suggest_float("delay_ratio", *cfg.delay_ratio_range)
+        else:
+            spec = sample_layout(trial, cfg)
+            arch_type = cfg.arch_type
+            connectivity = trial.suggest_categorical("connectivity", list(cfg.connectivity_choices))
+            connection_type = "subset"
+            delay_ratio = trial.suggest_float("delay_ratio", *cfg.delay_ratio_range)
 
         metrics, err = _run_one(cfg, spec, f"{cfg.run_tag}t{trial.number}",
-                                cfg.arch_type, connectivity, delay_ratio)
+                                arch_type, connectivity, delay_ratio, connection_type)
         if metrics is None:
             trial.set_user_attr("stderr_tail", err or "parse_failed")
             raise optuna.TrialPruned()
@@ -236,23 +251,23 @@ def make_objective(cfg: SearchConfig, block_types=None):
 
     return objective
 
+def _make_sampler(cfg: SearchConfig):
+    if cfg.sampler == "nsga2":
+        return optuna.samplers.NSGAIISampler()
+    return optuna.samplers.TPESampler(constant_liar=cfg.parallel)
+
+
 def run_study(cfg: SearchConfig, n_trials: int = 40, seed_named: bool = True,
               study_name: str = "lazagna_3d", storage: Optional[str] = None) -> optuna.Study:
-    """
-    Multi-objective study minimizing (CPD, WL). Set `storage` to a sqlite URL like
-    'sqlite:///lazagna_study.db' to make it resumable and to run trials in parallel
-    across processes (each process calls run_study with the same storage+name).
-    """
     study = optuna.create_study(
-
         directions=["minimize", "minimize"],
         study_name=study_name,
         storage=storage,
         load_if_exists=storage is not None,
-        sampler=optuna.samplers.TPESampler(),
+        sampler=_make_sampler(cfg),
     )
 
-    if seed_named:
+    if seed_named and cfg.search_mode == "layout":
 
         for name, spec in NAMED_LAYOUTS.items():
             params = {
@@ -314,14 +329,14 @@ def report(study: optuna.Study) -> None:
                   f"{top.user_attrs['cpd_impr_pct'] - seeded_top.user_attrs['cpd_impr_pct']:.2f} pts")
 
 if __name__ == "__main__":
-
     cfg = SearchConfig(
         lazagna_root=os.environ.get("LAZAGNA_ROOT", os.path.expanduser("~/LaZagna")),
         benchmark_dir="{lazagna_root}/benchmarks/MCNC_benchmarks/clma",
         is_verilog=False,
         width=30, height=30, width_2d=42, height_2d=42,
-        channel_width=100, seeds=1,
+        channel_width=100, seeds=3,
+        search_mode="connectivity",
     )
-    study = run_study(cfg, n_trials=15, study_name="lazagna_clma",
-                      storage="sqlite:///lazagna_clma.db")
+    study = run_study(cfg, n_trials=15, study_name="lazagna_clma_conn",
+                      storage="sqlite:///lazagna_clma_conn.db")
     report(study)
