@@ -1,0 +1,100 @@
+# ============================================================
+# LaZagna — Default Configuration
+# ============================================================
+# These values are applied when a parameter is not specified
+# in your setup file. You only need to include parameters that
+# differ from these defaults.
+#
+# REQUIRED (no default):
+#   experiment_name   — A unique name for this experiment run.
+#
+# SWEEP CONVENTION:
+#   Values in lists [] are swept (Cartesian product).
+#   Scalar values are fixed across all runs.
+#
+# PATH PLACEHOLDER:
+#   Use {lazagna_root} to refer to the LaZagna install directory.
+# ============================================================
+
+
+# --- FPGA Grid Dimensions ---
+grid:
+  width_3d: 10          # 3D FPGA grid width  (columns)
+  height_3d: 10         # 3D FPGA grid height (rows)
+  width_2d: 15          # 2D-equivalent grid width  (used when type is "2d")
+  height_2d: 15         # 2D-equivalent grid height
+  channel_width: 50     # Routing channel width
+
+
+# --- Architecture Configurations ---
+# List of architecture types to evaluate. Each entry can optionally
+# specify an arch_file to override the built-in default for that type.
+#
+# Built-in default arch files (all under arch_files/templates/dsp_bram/):
+#   3d_sb              → vtr_arch_dsp_bram.xml
+#   3d_cb              → vtr_3d_cb_arch_dsp_bram.xml
+#   3d_cb_out_only     → vtr_3d_cb_out_only_arch_dsp_bram.xml
+#   hybrid_cb          → vtr_3d_cb_arch_dsp_bram.xml
+#   hybrid_cb_out_only → vtr_3d_cb_out_only_arch_dsp_bram.xml
+#   2d                 → vtr_3d_cb_arch_dsp_bram.xml
+#
+# To override, add arch_file to the entry:
+#   - type: 3d_sb
+#     arch_file: "{lazagna_root}/arch_files/my_custom_arch.xml"
+architectures:
+  - type: 3d_sb
+
+
+# --- Benchmark Configuration ---
+benchmarks:
+  directory: "{lazagna_root}/benchmarks/and2_or2"
+  is_verilog: false     # true = Verilog (.v), false = BLIF (.blif)
+
+
+# --- Placement ---
+placement:
+  algorithm: ["cube_bb"]    # Options: "cube_bb", "per_layer_bb". List = sweep.
+
+
+# --- Seed Configuration ---
+seeds:
+  mode: fixed           # "fixed"  = use one deterministic seed
+                        # "random" = generate N random seeds
+  value: 1              # fixed mode  → the seed value
+                        # random mode → number of seeds to generate
+
+
+# --- 3D Switch Block Configuration ---
+switch_block_3d:
+  connectivity: [1]                     # Fraction of vertical connections (0–1). List = sweep.
+  connection_type: ["subset"]           # SB connection pattern. Options: "subset", "custom". List = sweep.
+  switch_name: "3D_SB_switch"          # Name of the 3D SB switch in the architecture XML
+  segment_name: "3D_SB_connection"     # Name of the 3D SB routing segment in the architecture XML
+  input_pattern: []                     # Custom input turn pattern  (used with connection_type: custom)
+  output_pattern: []                    # Custom output turn pattern (used with connection_type: custom)
+  location_pattern: ["repeated_interval"]   # Where to place 3D SBs.
+                                            # Options: "repeated_interval", "random", "custom"
+  grid_csv_path: ""                     # CSV file for custom SB placement grid
+                                        # (required when location_pattern includes "custom")
+
+  # custom_patterns:                    # (Optional) Multiple input/output patterns to sweep.
+  #   - input:  [0, 0, 0, 0]           #   Turn offsets [North, East, South, West]
+  #     output: [0, 0, 0, 0]           #   Each pair is tested as a linked parameter.
+
+
+# --- Interlayer Delay Configuration ---
+# Controls delay characteristics of vertical (inter-layer) connections.
+interlayer_delay:
+  vertical_connectivity: 1              # Number of vertical connections per switch block
+  delay_ratio: [0.739]                  # Ratio of vertical-to-horizontal delay. List = sweep.
+  base_delay_switch: "L4_driver"        # Reference switch whose delay is used for scaling
+  update_arch_delay: true               # Whether to update the arch XML with scaled delays
+  switch_pairs:                         # Mapping: base switch name → inter-layer switch name
+    L4_driver: "L4_inter_layer_driver"
+    L16_driver: "L16_inter_layer_driver"
+    ipin_cblock: "ipin_inter_layer_cblock"
+
+
+# --- Advanced Options ---
+advanced:
+  additional_vpr_options: ""            # Extra CLI flags passed to VPR (e.g. "--inner_num 0.5")

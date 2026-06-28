@@ -289,7 +289,7 @@ def main():
     # connection_types = ["subset"]
 
     type_sbs = ["3d_cb"]
-    # type_sbs = ["combined"]
+    # type_sbs = ["3d_sb"]
 
     random_seed_array = [random.randint(0, 100000) for _ in range(0, 2)]
     # random_seed_array = [1]
@@ -407,11 +407,11 @@ def main():
                             elif type_sb == "2d":
                                 arch_file = "/home/Ismael/3DFADE/arch_files/templates/dsp_bram/vtr_2d_arch_dsp_bram.xml"
 
-                            elif type_sb == "combined":
+                            elif type_sb == "3d_sb":
                                 arch_file = "/home/Ismael/3DFADE/arch_files/templates/dsp_bram/vtr_arch_dsp_bram.xml"
 
 
-                            legal_choices = ["combined", "3d_cb", "2d", "3d_cb_out_only", "hybrid_cb", "hybrid_cb_out"]
+                            legal_choices = ["3d_sb", "3d_cb", "2d", "3d_cb_out_only", "hybrid_cb", "hybrid_cb_out"]
                             if type_sb not in legal_choices:    
                                 print(f"ERROR: Invalid SB type: {type_sb}. Please choose from {legal_choices}")
                                 exit(1)

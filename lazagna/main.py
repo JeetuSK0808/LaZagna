@@ -2,7 +2,7 @@
 
 from run_interface import run_interface, ITD_paper_top_modules, ITD_subset_top_modules, ITD_quick_top_modules, VTR_benchmarks_top_modules
 from file_handling import get_files_with_extension
-from yaml_file_processing import get_run_params_from_yaml
+from yaml_file_processing_v2 import get_run_params_from_yaml_v2
 import os
 from concurrent.futures import ProcessPoolExecutor
 import psutil
@@ -76,7 +76,7 @@ def main():
     verbose = args.verbose
 
     # only enable false for debugging, it prints too much, give out every formation tested.
-    run_params = get_run_params_from_yaml(yaml_file, verbose=False)
+    run_params = get_run_params_from_yaml_v2(yaml_file, verbose=False)
 
     run_params = setup_benchmark_files(run_params)
 

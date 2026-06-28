@@ -1,0 +1,59 @@
+width: 10
+
+height: 10 
+
+width_2d: 15
+
+height_2d: 15
+
+channel_width: 50
+
+percent_connectivity: [1, 0.66, 0.33]
+
+place_algorithm: ["cube_bb"]
+
+connection_type: ["subset"]
+
+linked_params:
+  type_sb_arch_mapping:
+    - type_sb: "3d_sb"
+      arch_file: "{lazagna_root}/arch_files/templates/dsp_bram/vtr_arch_dsp_bram.xml"
+
+num_seeds: 1
+
+random_seed: False
+
+non_random_seed: 1
+
+additional_vpr_options: ""
+
+cur_loop_identifier: "sb_percentage_test"
+
+is_verilog_benchmarks: False
+
+benchmarks_dir: "{lazagna_root}/benchmarks/and2_or2"
+
+vertical_connectivity: 1 
+
+sb_switch_name: "3D_SB_switch"
+
+sb_segment_name: "3D_SB_connection"
+
+sb_input_pattern: []
+
+sb_output_pattern: []
+
+sb_location_pattern: ["repeated_interval"]
+
+sb_grid_csv_path: ""
+
+vertical_delay_ratio: [0.739]
+
+base_delay_switch: "L4_driver"
+
+switch_interlayer_pairs:
+  L4_driver: "L4_inter_layer_driver"
+  L16_driver: "L16_inter_layer_driver"
+  ipin_cblock: "ipin_inter_layer_cblock"
+
+update_arch_delay: True
