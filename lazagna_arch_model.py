@@ -781,49 +781,75 @@ class ExperimentOptions:
     advanced: AdvancedOptions = field(default_factory=AdvancedOptions)
 
     def to_dict(self) -> dict:
-        arch = self.architectures[0]
+        """Emit the NESTED v2 YAML schema consumed by the current lab flow
+        (lazagna/main.py -> yaml_file_processing_v2.get_run_params_from_yaml_v2).
+        The schema is documented in setup_files/defaults.yaml. Only
+        experiment_name is strictly required; everything else deep-merges over
+        defaults.yaml, but we emit a full config so runs are self-contained.
+
+        NOTE: the previous FLAT schema (width/type_sb/percent_connectivity/...)
+        was for the old yaml_file_processing.py. The lab moved main.py to v2
+        (commit "Updated YAML configuration"), which requires this nested form
+        and rejects the flat one with "'experiment_name' is required"."""
         sb = self.switch_block_3d
         il = self.interlayer_delay
-        seeds_random = self.seeds.mode == "random"
 
-        out: dict = {
-            "original_dir": "",
-            "cur_loop_identifier": self.experiment_name,
-            "width": self.grid.width_3d,
-            "height": self.grid.height_3d,
-            "width_2d": self.grid.width_2d,
-            "height_2d": self.grid.height_2d,
-            "channel_width": self.grid.channel_width,
-            "type_sb": arch.type,
-            "arch_file": arch.arch_file or "",
-            "benchmarks_dir": self.benchmarks.directory,
-            "is_verilog_benchmarks": self.benchmarks.is_verilog,
-            "place_algorithm": self.placement.algorithm,
-            "percent_connectivity": sb.connectivity,
+        architectures = []
+        for a in self.architectures:
+            entry = {"type": a.type}
+            if a.arch_file:
+                entry["arch_file"] = a.arch_file
+            architectures.append(entry)
+
+        sb_block: dict = {
+            "connectivity": sb.connectivity,
             "connection_type": sb.connection_type,
-            "sb_switch_name": sb.switch_name,
-            "sb_segment_name": sb.segment_name,
-            "sb_location_pattern": sb.location_pattern,
-            "sb_grid_csv_path": [sb.grid_csv_path] if sb.grid_csv_path else [""],
-            "vertical_connectivity": il.vertical_connectivity,
-            "vertical_delay_ratio": il.delay_ratio,
-            "base_delay_switch": il.base_delay_switch,
-            "switch_interlayer_pairs": il.switch_pairs,
-            "update_arch_delay": il.update_arch_delay,
-            "additional_vpr_options": self.advanced.additional_vpr_options,
-            "num_seeds": self.seeds.value if seeds_random else None,
-            "random_seed": seeds_random,
-            "linked_params": {},
+            "switch_name": sb.switch_name,
+            "segment_name": sb.segment_name,
+            "location_pattern": sb.location_pattern,
         }
-        if not seeds_random:
-            out["non_random_seed"] = self.seeds.value
-        if sb.input_pattern and sb.output_pattern:
-            out["sb_pattern"] = [[sb.input_pattern, sb.output_pattern]]
-        else:
-            out["linked_params"]["sb_pattern_mapping"] = [
-                {"sb_input_pattern": [0, 0, 0, 0], "sb_output_pattern": [0, 0, 0, 0]}
-            ]
-        return out
+        # Emit explicit patterns only when set; empty is v2's default (proven by
+        # the lab's simple_test.yaml, which omits them).
+        if sb.input_pattern:
+            sb_block["input_pattern"] = sb.input_pattern
+        if sb.output_pattern:
+            sb_block["output_pattern"] = sb.output_pattern
+        if sb.grid_csv_path:
+            sb_block["grid_csv_path"] = sb.grid_csv_path
+
+        return {
+            "experiment_name": self.experiment_name,
+            "grid": {
+                "width_3d": self.grid.width_3d,
+                "height_3d": self.grid.height_3d,
+                "width_2d": self.grid.width_2d,
+                "height_2d": self.grid.height_2d,
+                "channel_width": self.grid.channel_width,
+            },
+            "architectures": architectures,
+            "benchmarks": {
+                "directory": self.benchmarks.directory,
+                "is_verilog": self.benchmarks.is_verilog,
+            },
+            "placement": {
+                "algorithm": self.placement.algorithm,
+            },
+            "seeds": {
+                "mode": self.seeds.mode,
+                "value": self.seeds.value,
+            },
+            "switch_block_3d": sb_block,
+            "interlayer_delay": {
+                "vertical_connectivity": il.vertical_connectivity,
+                "delay_ratio": il.delay_ratio,
+                "base_delay_switch": il.base_delay_switch,
+                "update_arch_delay": il.update_arch_delay,
+                "switch_pairs": il.switch_pairs,
+            },
+            "advanced": {
+                "additional_vpr_options": self.advanced.additional_vpr_options,
+            },
+        }
 
 
 def run_lazagna(arch: Architecture, opts: ExperimentOptions, lazagna_root: Optional[str] = None) -> dict:
@@ -845,7 +871,12 @@ def run_lazagna(arch: Architecture, opts: ExperimentOptions, lazagna_root: Optio
             f.write(arch_xml)
 
         config = opts.to_dict()
-        config["arch_file"] = arch_path
+        # v2 schema: the generated arch lives inside architectures[0].arch_file
+        # (there is no top-level arch_file). run_lazagna renders exactly one arch.
+        if config.get("architectures"):
+            config["architectures"][0]["arch_file"] = arch_path
+        else:
+            config["architectures"] = [{"type": "3d_sb", "arch_file": arch_path}]
 
         with open(yaml_path, "w") as f:
             yaml.dump(config, f, default_flow_style=False)

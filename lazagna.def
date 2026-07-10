@@ -1,0 +1,111 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+# ============================================================================
+# LaZagna Apptainer definition file for Georgia Tech PACE.
+#   Build:  apptainer build lazagna.sif lazagna.def
+#   Result: self-contained image with the LaZagna flow (Yosys synthesis -> VPR
+#           -> Optuna optimizer), no host Python / no host venv needed.
+#
+# BUILD STEPS ARE DERIVED FROM THE REPO, NOT INVENTED:
+#   - apt packages    -> install_apt_packages.sh   (VTR/OpenFPGA/parmys deps)
+#   - build sequence  -> makefile ("build" = submodule init + OpenFPGA make all)
+#   - python deps     -> requirements.txt
+#   - install docs    -> docs/source/installation.md
+#
+# POINTS I COULD NOT VERIFY FROM THE REPO / PACE DOCS (confirm before trusting):
+#   1. OS VERSION: repo docs say "Ubuntu (tested)" but pin no version. Using 24.04 per the task
+#      default. Data point: PACE's own Apptainer examples use ubuntu:jammy (22.04). 24.04 should
+#      be fine for VTR9/OpenFPGA; if the build fails on a toolchain issue, change From: to
+#      ubuntu:22.04 (jammy) and rebuild.
+#   6. BUILD IS UNPRIVILEGED on PACE compute nodes (their guide shows no sudo/fakeroot). The apt +
+#      OpenFPGA compile in %post need build-time root; if the unprivileged build errors on
+#      permissions, build with `apptainer build --fakeroot lazagna.sif lazagna.def`. Build/run on
+#      COMPUTE NODES only (Apptainer is disabled on PACE login nodes).
+#   2. OPTUNA is NOT in requirements.txt. The optimizer (lazagna_optuna.py) needs
+#      it, so it is pip-installed explicitly below (optuna 4.9.0 was used locally).
+#   3. FORK STATE: this clones github.com/JeetuSK0808/LaZagna (Jeetu's PUBLIC fork). The v2
+#      to_dict fix, Bug #3 fix, columns/sampler edits, campaign/, and yosys.ys ARE pushed there
+#      (commit "PACE turnkey ..."). If you later re-fix anything locally, re-push or use the
+#      %files bake block below to overlay local copies at build time.
+#   4. PACE SPECIFICS are VERIFIED from public PACE docs (docs.pace.gatech.edu), see
+#      CONTAINER_README.md: -q inferno (21-day wall) / embers (8h), -A gts-<PI>, module load
+#      apptainer, project storage /storage/coda1/... Residual user-specifics only: your account
+#      string, exact apptainer module version, project path. (.def itself is PACE-agnostic.)
+#   5. OpenFPGA build RAM: parallel C++ build is memory-hungry. Build on a node
+#      with >=32 GB; lower BUILD_JOBS below if the build OOMs.
+# ============================================================================
+
+%files
+    # OPTIONAL — uncomment to bake LOCAL fixed files into the image instead of
+    # relying on the fork being updated. Requires these files present next to
+    # this .def at build time. Paths overlay the cloned repo (see %post).
+    # lazagna_arch_model.py   /opt/LaZagna/lazagna_arch_model.py
+    # lazagna_optuna.py       /opt/LaZagna/lazagna_optuna.py
+    # layout_space.py         /opt/LaZagna/layout_space.py
+    # arch_from_template.py   /opt/LaZagna/arch_from_template.py
+    # lazagna/run_interface.py /opt/LaZagna/lazagna/run_interface.py
+    # task/designs/yosys.ys   /opt/LaZagna/task/designs/yosys.ys
+
+%post
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # --- System dependencies: exact list from install_apt_packages.sh (sudo dropped;
+    #     %post runs as root) + git/ca-certificates/pip needed for clone & python. ---
+    apt-get update
+    apt-get install -y \
+        make cmake build-essential pkg-config bison flex \
+        python3-dev python3-venv python3-pip \
+        openssl libssl-dev \
+        swig wget \
+        libgtk-3-dev libx11-dev \
+        clang libreadline-dev gawk tcl-dev libffi-dev git graphviz xdot \
+        libboost-system-dev libboost-python-dev libboost-filesystem-dev zlib1g-dev \
+        sphinx-common ca-certificates
+    rm -rf /var/lib/apt/lists/*
+
+    # --- Clone LaZagna (Jeetu's fork, PUBLIC) into the image. Carries the v2 to_dict fix,
+    #     Bug #3 fix, columns/sampler edits, campaign/, and yosys.ys (pushed; see note 3). ---
+    cd /opt
+    git clone https://github.com/JeetuSK0808/LaZagna.git
+    cd /opt/LaZagna
+
+    # --- Submodules (OpenFPGA + benchmarks), recursive (per makefile "init"). ---
+    git submodule update --init --recursive
+
+    # --- Build OpenFPGA/VTR9 (per makefile "build": OpenFPGA make all). ---
+    BUILD_JOBS=$(nproc)
+    cd /opt/LaZagna/OpenFPGA && make all -j"${BUILD_JOBS}"
+    cd /opt/LaZagna
+
+    # --- Python deps in a CONTAINER venv (NOT $HOME: PACE auto-mounts $HOME and a
+    #     ~/venv or ~/.local would shadow this; see --no-home in CONTAINER_README). ---
+    python3 -m venv /opt/venv
+    /opt/venv/bin/pip install --no-cache-dir --upgrade pip
+    /opt/venv/bin/pip install --no-cache-dir -r /opt/LaZagna/requirements.txt
+    /opt/venv/bin/pip install --no-cache-dir optuna    # NOT in requirements.txt (note 2)
+
+%environment
+    export LAZAGNA_ROOT=/opt/LaZagna
+    export PATH=/opt/venv/bin:$PATH
+    export PYTHONUNBUFFERED=1
+
+%runscript
+    cd "$LAZAGNA_ROOT"
+    exec python3 "$@"
+
+%labels
+    Application LaZagna
+    Purpose "3D FPGA architecture exploration (VTR/OpenFPGA) + Optuna optimizer"
+    Base ubuntu:24.04
+
+%help
+    LaZagna flow container for PACE.
+      Build:      apptainer build lazagna.sif lazagna.def
+      Smoke test: apptainer exec --no-home --cleanenv -B <runroot>:/opt/LaZagna/run \
+                    lazagna.sif python3 /opt/LaZagna/lazagna/main.py \
+                    -f /opt/LaZagna/setup_files/simple_test.yaml -v
+    See CONTAINER_README.md (build + bind mounts) and EXPERIMENT_PLAN.md (campaign).
+    NOTE: writable outputs (tasks_run/, rrg_3d/, results/, *.db) must be bind-mounted
+    to writable storage; the SIF itself is read-only.
