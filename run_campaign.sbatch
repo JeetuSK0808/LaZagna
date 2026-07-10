@@ -2,7 +2,7 @@
 # ============================================================================
 # LaZagna campaign — one submission, runs the EXPERIMENT_PLAN.md phases in order.
 # Submit:  sbatch run_campaign.sbatch
-# Select phases (for split submission, see CONTAINER_README):
+# Select phases (for split submission on short queues):
 #          PHASES="0 1"   sbatch run_campaign.sbatch
 #
 # SLURM directives (PACE). Account is auto-detected by submit_campaign.sh (recommended entry point).
@@ -32,7 +32,7 @@ module load apptainer   # PACE: confirm exact module name (could be 'apptainer' 
 # --- Paths (edit to your project storage; NOT $HOME) ---
 CAMPAIGN="${CAMPAIGN:-$SLURM_SUBMIT_DIR}"
 SIF="${SIF:-$CAMPAIGN/lazagna.sif}"
-OVERLAY="${OVERLAY:-$CAMPAIGN/lazagna_overlay.img}"   # writable overlay (see CONTAINER_README)
+OVERLAY="${OVERLAY:-$CAMPAIGN/lazagna_overlay.img}"   # writable overlay (auto-created below)
 SCRIPTS="${SCRIPTS:-$CAMPAIGN/campaign}"              # this dir with the phase_*.py + collect
 SUMMARY="${SUMMARY:-$CAMPAIGN/results_summary}"       # host-visible collected results
 PHASES="${PHASES:-0 1 2 3 4}"
@@ -46,13 +46,16 @@ mkdir -p "$SUMMARY"
 if [ ! -f "$OVERLAY" ]; then
   echo "Overlay $OVERLAY missing -- creating 50 GB overlay..."
   apptainer overlay create --size 51200 "$OVERLAY" \
-    || { echo "FATAL: 'apptainer overlay create' failed. If unsupported on your PACE, use the bind"; \
-         echo "       fallback in CONTAINER_README.md (Known caveats)."; exit 1; }
+    || { echo "FATAL: 'apptainer overlay create' failed. If overlays are unsupported on your PACE,"; \
+         echo "       bind writable host dirs over the outputs instead of --overlay, e.g. add to APP:"; \
+         echo "       -B \$W/rrg_3d:/opt/LaZagna/rrg_3d -B \$W/tasks_run:/opt/LaZagna/tasks_run"; \
+         echo "       -B \$W/results:/opt/LaZagna/results -B \$W/arch_files:/opt/LaZagna/arch_files"; \
+         echo "       (\$W = a writable /storage dir), or ask PACE to enable overlay."; exit 1; }
 fi
 
 # Writable outputs (rrg_3d/, tasks_run/, results/, *.db) live inside /opt/LaZagna, which the
 # read-only SIF cannot write. --overlay makes them persist (standard Apptainer; NOT in PACE's KB
-# but verified by the smoke test -- see CONTAINER_README for a bind fallback). --no-home/--cleanenv
+# but verified by the phase-0 smoke run; bind fallback printed above if it fails). --no-home/--cleanenv
 # keep the auto-mounted $HOME (and any ~/venv) out (PACE still auto-mounts /storage, $PWD, /tmp, so
 # paths under /storage are reachable). NOTE: `module load` is done ABOVE, outside the container --
 # it does not work inside `apptainer exec`.

@@ -28,7 +28,7 @@ cfg = SearchConfig(
 if __name__ == "__main__":
     # NOTE: needs benchmarks/koios_elt/eltwise_layer.v to exist in the image. It is a
     # single-design copy of benchmarks/koios/eltwise_layer.v; if absent, create it first
-    # (cp). Flagged in EXPERIMENT_PLAN / CONTAINER_README.
+    # (cp). Flagged in EXPERIMENT_PLAN.md.
     elt = os.path.join(cfg.benchmark_dir, "eltwise_layer.v")
     if not os.path.exists(elt):
         os.makedirs(cfg.benchmark_dir, exist_ok=True)

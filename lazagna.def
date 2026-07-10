@@ -28,10 +28,10 @@ From: ubuntu:24.04
 #      to_dict fix, Bug #3 fix, columns/sampler edits, campaign/, and yosys.ys ARE pushed there
 #      (commit "PACE turnkey ..."). If you later re-fix anything locally, re-push or use the
 #      %files bake block below to overlay local copies at build time.
-#   4. PACE SPECIFICS are VERIFIED from public PACE docs (docs.pace.gatech.edu), see
-#      CONTAINER_README.md: -q inferno (21-day wall) / embers (8h), -A gts-<PI>, module load
-#      apptainer, project storage /storage/coda1/... Residual user-specifics only: your account
-#      string, exact apptainer module version, project path. (.def itself is PACE-agnostic.)
+#   4. PACE SPECIFICS are VERIFIED from public PACE docs (docs.pace.gatech.edu): -q inferno
+#      (21-day wall) / embers (8h), -A gts-<PI>, module load apptainer, project storage
+#      /storage/coda1/... submit_campaign.sh auto-detects the account; project path defaults to
+#      the submit dir; the module load uses the default version. (.def itself is PACE-agnostic.)
 #   5. OpenFPGA build RAM: parallel C++ build is memory-hungry. Build on a node
 #      with >=32 GB; lower BUILD_JOBS below if the build OOMs.
 # ============================================================================
@@ -80,7 +80,7 @@ From: ubuntu:24.04
     cd /opt/LaZagna
 
     # --- Python deps in a CONTAINER venv (NOT $HOME: PACE auto-mounts $HOME and a
-    #     ~/venv or ~/.local would shadow this; see --no-home in CONTAINER_README). ---
+    #     ~/venv or ~/.local would shadow this; see --no-home in run_campaign.sbatch). ---
     python3 -m venv /opt/venv
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip
     /opt/venv/bin/pip install --no-cache-dir -r /opt/LaZagna/requirements.txt
@@ -106,6 +106,6 @@ From: ubuntu:24.04
       Smoke test: apptainer exec --no-home --cleanenv -B <runroot>:/opt/LaZagna/run \
                     lazagna.sif python3 /opt/LaZagna/lazagna/main.py \
                     -f /opt/LaZagna/setup_files/simple_test.yaml -v
-    See CONTAINER_README.md (build + bind mounts) and EXPERIMENT_PLAN.md (campaign).
+    See EXPERIMENT_PLAN.md (campaign design) and submit_campaign.sh (one-command build + run).
     NOTE: writable outputs (tasks_run/, rrg_3d/, results/, *.db) must be bind-mounted
     to writable storage; the SIF itself is read-only.

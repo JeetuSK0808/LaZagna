@@ -87,7 +87,7 @@ numbers inflate). BLIF benchmarks (clma) skip synthesis; Verilog (eltwise/conv/l
 - Wall-time: PACE **inferno allows up to 21 days**, so the full campaign fits in ONE submission
   (`sbatch run_campaign.sbatch`) — set `--time` generously. Only on **embers** (free, 8h cap) must
   you split. The script's `PHASES=` env var enables a 3-job split when needed: Job A = Phases 0-1
-  (light), Job B = Phase 2 (medium), Job C = Phases 3-4 (heavy). Submission order in
-  CONTAINER_README.md.
+  (light), Job B = Phase 2 (medium), Job C = Phases 3-4 (heavy), chained with `sbatch
+  --dependency=afterany:<jobid>`.
 - All time/mem numbers are estimates from laptop behavior scaled to cluster; **tune to the
   account's queue limits** (`-A` account, partition wall-time caps).
