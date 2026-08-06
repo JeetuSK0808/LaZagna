@@ -54,6 +54,15 @@ WORK_ROOT="${WORK_ROOT:-$HERE/campaign_work/$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "$WORK_ROOT"/{journal,bench}
 echo "Work dir: $WORK_ROOT"
 
+# Tunables travel via an env file, NOT sbatch --export (which splits on commas and
+# would mangle values like STUDIES="columns,tpe"). Jobs source this if present.
+ENVF="$WORK_ROOT/campaign.env"
+: > "$ENVF"
+for v in SEEDS TRIALS_COLUMNS TRIALS_SAMPLER STUDIES KEEP_RRG CW HB_GRID HB_CW; do
+  if [ -n "${!v:-}" ]; then printf '%s=%q\n' "$v" "${!v}" >> "$ENVF"; fi
+done
+[ -s "$ENVF" ] && { echo "Tunables ($ENVF):"; cat "$ENVF"; }
+
 # --- 4. Build the image if needed -------------------------------------------
 SIF="$HERE/lazagna.sif"
 DEP=""
@@ -67,10 +76,7 @@ else
 fi
 
 # --- 5. Submit workers + extras + collect -------------------------------------
-EXPORTS="ALL,WORK_ROOT=$WORK_ROOT"
-for v in SEEDS TRIALS_COLUMNS TRIALS_SAMPLER STUDIES CW HB_GRID HB_CW; do
-  if [ -n "${!v:-}" ]; then EXPORTS="$EXPORTS,$v=${!v}"; fi
-done
+EXPORTS="ALL,WORK_ROOT=$WORK_ROOT"   # only WORK_ROOT rides --export; tunables via campaign.env
 
 WID="$(sbatch --parsable -A "$ACCT" -q "$QUEUE" $DEP \
         --array=0-$((N_WORKERS-1)) --export="$EXPORTS" worker_array.sbatch)"

@@ -28,6 +28,7 @@ command -v apptainer >/dev/null || { echo "FATAL: apptainer not found"; exit 1; 
 CAMPAIGN="${CAMPAIGN:-$SLURM_SUBMIT_DIR}"
 SIF="${SIF:-$CAMPAIGN/lazagna.sif}"
 WORK_ROOT="${WORK_ROOT:?WORK_ROOT not set (use submit_campaign.sh)}"
+[ -f "$WORK_ROOT/campaign.env" ] && . "$WORK_ROOT/campaign.env"   # tunables (SEEDS, STUDIES, ...)
 ID="${SLURM_ARRAY_TASK_ID:-0}"
 W="$WORK_ROOT/worker_$ID"
 

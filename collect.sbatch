@@ -21,6 +21,7 @@ command -v apptainer >/dev/null || { echo "FATAL: apptainer not found"; exit 1; 
 CAMPAIGN="${CAMPAIGN:-$SLURM_SUBMIT_DIR}"
 SIF="${SIF:-$CAMPAIGN/lazagna.sif}"
 WORK_ROOT="${WORK_ROOT:?WORK_ROOT not set (use submit_campaign.sh)}"
+[ -f "$WORK_ROOT/campaign.env" ] && . "$WORK_ROOT/campaign.env"
 
 if ! apptainer exec --no-home --cleanenv "$SIF" test -d /opt/LaZagna/base_rrg; then
   echo "FATAL: lazagna.sif is STALE. rm lazagna.sif && bash submit_campaign.sh"; exit 1

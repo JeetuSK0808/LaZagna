@@ -24,6 +24,7 @@ command -v apptainer >/dev/null || { echo "FATAL: apptainer not found"; exit 1; 
 CAMPAIGN="${CAMPAIGN:-$SLURM_SUBMIT_DIR}"
 SIF="${SIF:-$CAMPAIGN/lazagna.sif}"
 WORK_ROOT="${WORK_ROOT:?WORK_ROOT not set (use submit_campaign.sh)}"
+[ -f "$WORK_ROOT/campaign.env" ] && . "$WORK_ROOT/campaign.env"   # tunables (SEEDS, CW, HB_*, ...)
 W="$WORK_ROOT/extras"
 
 [ -f "$SIF" ] || { echo "FATAL: missing SIF $SIF"; exit 1; }
