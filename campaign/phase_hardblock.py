@@ -34,7 +34,7 @@ architectures:
   - type: "combined"
     arch_file: "{{lazagna_root}}/arch_files/templates/dsp_bram/vtr_arch_dsp_bram.xml"
 benchmarks:
-  directory: "{{lazagna_root}}/benchmarks/hb_{name}"
+  directory: "{bdir}"
   is_verilog: true
 placement:
   algorithm: ["cube_bb"]
@@ -60,18 +60,21 @@ advanced:
   additional_vpr_options: ""
 """
 
+WORK = os.environ.get("WORK", "/work")   # benchmark copies + setup yamls live on the HOST
+                                          # work dir (container tree is read-only, no overlay)
+
 if __name__ == "__main__":
     print(f"GRID={GRID} CW={CW} seeds={SEEDS}", flush=True)
     for d in DESIGNS:
         src = os.path.join(ROOT, "benchmarks", "koios", f"{d}.v")
         if not os.path.exists(src):
             print(f"[{d}] source missing ({src}) - FLAG, skipping", flush=True); continue
-        bdir = os.path.join(ROOT, "benchmarks", f"hb_{d}")
+        bdir = os.path.join(WORK, "bench", f"hb_{d}")
         os.makedirs(bdir, exist_ok=True)
         shutil.copy(src, os.path.join(bdir, f"{d}.v"))
-        cfgp = os.path.join(ROOT, "setup_files", f"hb_{d}.yaml")
+        cfgp = os.path.join(bdir, f"hb_{d}.yaml")
         with open(cfgp, "w") as f:
-            f.write(CONFIG_TMPL.format(g=GRID, w2d=W2D, cw=CW, seeds=SEEDS, name=d))
+            f.write(CONFIG_TMPL.format(g=GRID, w2d=W2D, cw=CW, seeds=SEEDS, name=d, bdir=bdir))
         print(f"=== {d}: flow at {GRID}x{GRID} cw{CW} (synth may be RAM-heavy) ===", flush=True)
         r = subprocess.run(["python3", os.path.join(ROOT, "lazagna", "main.py"), "-f", cfgp, "-v"],
                            capture_output=True, text=True)

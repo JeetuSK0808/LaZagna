@@ -21,9 +21,14 @@ CW_ENV = os.environ.get("CW")
 CW_CANDIDATES = [int(CW_ENV)] if CW_ENV else [200, 300, 400]
 TAG = "e2d3d"
 
+# Benchmark dir lives on the HOST work dir (container benchmarks/ is read-only; the old
+# in-container copy needed the overlay, which is gone).
+WORK = os.environ.get("WORK", "/work")
+BENCH_DIR = os.path.join(WORK, "bench", "koios_elt")
+
 cfg = SearchConfig(
     lazagna_root=ROOT,
-    benchmark_dir=os.path.join(ROOT, "benchmarks", "koios_elt"),
+    benchmark_dir=BENCH_DIR,
     is_verilog=True,
     width=36, height=36, width_2d=44, height_2d=44,
     channel_width=200, seeds=SEEDS,
@@ -57,7 +62,7 @@ if __name__ == "__main__":
             base = m; chosen_cw = cw
             print(f"[2D baseline] routed at cw={cw}: CPD={m[0]:.4e} WL={m[1]:.0f}", flush=True)
             break
-        print(f"[2D baseline] cw={cw} did not route/parse: {(err or '')[:120]}", flush=True)
+        print(f"[2D baseline] cw={cw} did not route/parse. stderr tail:\n{(err or '')[-1500:]}", flush=True)
     if base is None:
         print("FATAL: 2D baseline unroutable at all candidate cw - FLAG, needs higher cw", flush=True)
         sys.exit(1)
@@ -67,7 +72,7 @@ if __name__ == "__main__":
     print(f"[3D] running aligned 3D at cw={chosen_cw} ...", flush=True)
     m3, err3 = _run_one(cfg, aligned, f"{TAG}threed{chosen_cw}", "combined", 1.0, 0.739)
     if m3 is None:
-        print(f"FATAL: 3D run failed at cw={chosen_cw}: {(err3 or '')[:120]} - FLAG", flush=True)
+        print(f"FATAL: 3D run failed at cw={chosen_cw} - FLAG. stderr tail:\n{(err3 or '')[-1500:]}", flush=True)
         sys.exit(1)
 
     bcpd, bwl = base; cpd, wl = m3

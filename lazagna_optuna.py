@@ -101,8 +101,15 @@ class SearchConfig:
 
     run_tag: str = field(default_factory=lambda: "run" + str(int(__import__("time").time())))
 
-    template_path: str = "arch_files/vtr_3d_cb_arch_dsp_bram_10x10_delay_ratio_0.739.xml"
+    # STATIC repo templates only. The old default pointed at a delay-ratio-generated file
+    # (arch_files/vtr_3d_cb_arch_dsp_bram_10x10_delay_ratio_0.739.xml) that only exists after
+    # a prior flow run -- in a fresh container it is missing (PACE run 11659291, phase 1
+    # FileNotFoundError). The flow re-derives interlayer delays from the yaml delay_ratio at
+    # run time, so the raw template is the correct input.
+    template_path: str = "arch_files/templates/dsp_bram/vtr_arch_dsp_bram.xml"
     template_2d_path: str = "arch_files/templates/dsp_bram/vtr_2d_arch_dsp_bram.xml"
+    # Hard cap per flow invocation; a hung yosys/VPR otherwise pins a worker until wall-time.
+    trial_timeout_s: int = 7200
 
     hb_period_choices: tuple[int, ...] = (4, 6, 8, 12)
     edge_fraction_range: tuple[float, float] = (0.1, 0.35)
@@ -181,9 +188,10 @@ def _run_one(cfg: SearchConfig, spec_or_none, exp_name: str, arch_type: str,
     )
     opts.architectures[0].type = arch_type
 
-    result = run_lazagna(arch, opts, lazagna_root=cfg.lazagna_root)
+    result = run_lazagna(arch, opts, lazagna_root=cfg.lazagna_root,
+                         timeout_s=cfg.trial_timeout_s)
     if result["returncode"] != 0:
-        return None, result["stderr"][-500:]
+        return None, result["stderr"][-1500:]
 
     metrics = parse_results(os.path.join(cfg.lazagna_root, "results"), only_containing=exp_name)
     return metrics, None
@@ -200,17 +208,52 @@ def reference_columns(cfg: SearchConfig) -> ColumnLayoutSpec:
             pattern.append(CLB)
     return ColumnLayoutSpec(columns=[list(pattern), list(pattern)])
 
-def make_objective(cfg: SearchConfig, block_types=None):
+def make_objective(cfg: SearchConfig, block_types=None, study: Optional[optuna.Study] = None):
+    """When `study` is given (parallel workers sharing storage), the reference baseline is
+    computed ONCE and shared through study user attrs: the first worker to arrive claims it
+    (claim -> re-read guard), the rest poll. Without `study`, behaves as before (per-process)."""
 
     baseline = {"cpd": None, "wl": None}
 
-    def ensure_baseline():
-        if baseline["cpd"] is not None:
-            return
+    def _compute_baseline():
         metrics, err = _run_one(cfg, reference_columns(cfg), f"{cfg.run_tag}ref", cfg.arch_type, 1.0, 0.739)
         if metrics is None:
             raise RuntimeError(f"3D-aligned reference baseline run failed: {err}")
-        baseline["cpd"], baseline["wl"] = metrics
+        return metrics
+
+    def ensure_baseline():
+        import time as _t
+        if baseline["cpd"] is not None:
+            return
+        if study is None:
+            baseline["cpd"], baseline["wl"] = _compute_baseline()
+            return
+        # shared-storage path
+        attrs = study.user_attrs
+        if attrs.get("baseline_cpd") is not None:
+            baseline["cpd"], baseline["wl"] = attrs["baseline_cpd"], attrs["baseline_wl"]
+            return
+        my_tag = f"{cfg.run_tag}-{os.getpid()}"
+        if attrs.get("baseline_claim") is None:
+            study.set_user_attr("baseline_claim", my_tag)
+            _t.sleep(5)  # let a racing claim overwrite before we re-read
+        if study.user_attrs.get("baseline_claim") == my_tag:
+            cpd, wl = _compute_baseline()
+            study.set_user_attr("baseline_cpd", cpd)
+            study.set_user_attr("baseline_wl", wl)
+            baseline["cpd"], baseline["wl"] = cpd, wl
+            return
+        # another worker owns the claim: poll (baseline run is ~10-20 min); failsafe = compute anyway
+        for _ in range(90):
+            _t.sleep(60)
+            attrs = study.user_attrs
+            if attrs.get("baseline_cpd") is not None:
+                baseline["cpd"], baseline["wl"] = attrs["baseline_cpd"], attrs["baseline_wl"]
+                return
+        cpd, wl = _compute_baseline()
+        study.set_user_attr("baseline_cpd", cpd)
+        study.set_user_attr("baseline_wl", wl)
+        baseline["cpd"], baseline["wl"] = cpd, wl
 
     def objective(trial: optuna.Trial) -> tuple[float, float]:
         ensure_baseline()
@@ -254,11 +297,28 @@ def make_objective(cfg: SearchConfig, block_types=None):
 def _make_sampler(cfg: SearchConfig):
     if cfg.sampler == "nsga2":
         return optuna.samplers.NSGAIISampler()
+    if cfg.sampler == "random":
+        return optuna.samplers.RandomSampler()
     return optuna.samplers.TPESampler(constant_liar=cfg.parallel)
 
 
+def journal_storage(path: str):
+    """Optuna storage that is safe on NFS/Lustre and for many parallel workers.
+    sqlite is neither (PACE run 11659291 died with 'sqlite3.OperationalError: disk I/O
+    error'); optuna's docs point to JournalStorage for exactly this case."""
+    from optuna.storages import JournalStorage
+    try:  # optuna >= 4
+        from optuna.storages.journal import JournalFileBackend
+        return JournalStorage(JournalFileBackend(path))
+    except ImportError:  # optuna 3.x name
+        from optuna.storages import JournalFileStorage
+        return JournalStorage(JournalFileStorage(path))
+
+
 def run_study(cfg: SearchConfig, n_trials: int = 40, seed_named: bool = True,
-              study_name: str = "lazagna_3d", storage: Optional[str] = None) -> optuna.Study:
+              study_name: str = "lazagna_3d", storage=None) -> optuna.Study:
+    """`storage` may be an optuna storage URL string OR a storage object
+    (e.g. journal_storage(...) for parallel/Lustre runs)."""
     study = optuna.create_study(
         directions=["minimize", "minimize"],
         study_name=study_name,
@@ -284,7 +344,7 @@ def run_study(cfg: SearchConfig, n_trials: int = 40, seed_named: bool = True,
                                               cfg.edge_fraction_range[1])
             study.enqueue_trial(params, user_attrs={"seeded_from": name})
 
-    study.optimize(make_objective(cfg), n_trials=n_trials)
+    study.optimize(make_objective(cfg, study=study), n_trials=n_trials)
     return study
 
 def report(study: optuna.Study) -> None:

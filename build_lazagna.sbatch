@@ -18,7 +18,9 @@
 # ============================================================================
 set -u
 
-module load apptainer
+module load apptainer 2>/dev/null || true   # may already be on PATH (Lmod said 'unknown
+                                            # module' on run 11659290 yet the build worked)
+command -v apptainer >/dev/null || { echo "FATAL: apptainer not found"; exit 1; }
 
 DEF="${DEF:-$SLURM_SUBMIT_DIR/lazagna.def}"
 SIF="${SIF:-$SLURM_SUBMIT_DIR/lazagna.sif}"

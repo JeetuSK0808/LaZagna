@@ -852,8 +852,10 @@ class ExperimentOptions:
         }
 
 
-def run_lazagna(arch: Architecture, opts: ExperimentOptions, lazagna_root: Optional[str] = None) -> dict:
+def run_lazagna(arch: Architecture, opts: ExperimentOptions, lazagna_root: Optional[str] = None,
+                timeout_s: Optional[int] = None) -> dict:
     import os
+    import signal
     import subprocess
     import tempfile
     import hashlib
@@ -881,16 +883,29 @@ def run_lazagna(arch: Architecture, opts: ExperimentOptions, lazagna_root: Optio
         with open(yaml_path, "w") as f:
             yaml.dump(config, f, default_flow_style=False)
 
-        result = subprocess.run(
+        # Own process group so a timeout kills yosys/VPR grandchildren too, not just main.py
+        # (plain subprocess.run(timeout=...) leaves them orphaned and burning CPU).
+        proc = subprocess.Popen(
             ["python3", os.path.join(root, "lazagna", "main.py"), "-f", yaml_path],
-            capture_output=True,
-            text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,
         )
+        try:
+            out, err = proc.communicate(timeout=timeout_s)
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            out, err = proc.communicate()
+            rc = -9
+            err = (err or "") + f"\n[run_lazagna] TIMEOUT after {timeout_s}s, process group killed"
 
         return {
-            "returncode": result.returncode,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
+            "returncode": rc,
+            "stdout": out,
+            "stderr": err,
         }
 
 

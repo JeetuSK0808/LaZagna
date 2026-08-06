@@ -1,9 +1,18 @@
 # LaZagna Cluster Campaign — Experiment Plan
 
-Proposed campaign that `run_campaign.sbatch` executes end-to-end in the container. Purposeful,
-not a brute-force sweep: every phase advances the paper (% over 2D, placement effects, sampler
-efficiency, wider hard-block benchmark set). Ordered cheap-validation-first so breakage surfaces
-in minutes. Each phase confidence-tagged; **CONFIRM** = Ismael should check before submitting.
+Campaign executed by `submit_campaign.sh` as a PARALLEL job set (v2, after the first PACE run):
+a **worker array** (default 16 SLURM jobs) contributes trials concurrently to the shared optuna
+studies through JournalStorage on the shared work dir — per Ismael's request, ~10-20 architectures
+evaluate at once in separate jobs, so 35 trials take roughly the wall-time of 2-3. An **extras**
+job runs the non-optuna phases (smoke, 2D-vs-3D, conv/lstm) alongside, and a **collect** job
+summarizes at the end. Purposeful, not a brute-force sweep: every phase advances the paper
+(% over 2D, placement effects, sampler efficiency, wider hard-block benchmark set).
+Each phase confidence-tagged; **CONFIRM** = Ismael should check before submitting.
+
+v2 post-mortem changes (from run 11659290/91): no sqlite (died on Lustre with `disk I/O error`)
+-> optuna JournalStorage; no overlay (50 GB filled -> ENOSPC) -> per-worker bind dirs + per-trial
+RRG cleanup; static arch templates only (a generated template was missing in the fresh image ->
+phase 1 `FileNotFoundError`); per-flow-run hard timeout with process-group kill.
 
 Verification gate (all phases): a result counts only if its `vpr_stdout.log` shows
 `VPR succeeded` with non-zero CPD/WL and sane block counts. `collect_results.py` enforces this
@@ -18,8 +27,9 @@ numbers inflate). BLIF benchmarks (clma) skip synthesis; Verilog (eltwise/conv/l
 ## Phase 0 — Smoke test (fail-fast) — CONFIDENT
 - **What:** clma, BLIF, cw100, 30x30, 1 config, 1 seed (`main.py -f setup_files/simple_test.yaml`
   or a clma connectivity single-trial).
-- **Why:** proves the container flow (Yosys/VPR/optimizer + writable overlay + binds) works
+- **Why:** proves the container flow (Yosys/VPR/optimizer + writable binds) works
   before spending accounted hours. If this fails, the job dies in ~10 min, not after hours.
+  (VERIFIED on PACE run 11659291: smoke passed in 20 s.)
 - **Resources:** ~10-20 min, 4 cores, 8 GB.
 - **Success:** `VPR succeeded`, CPD/WL parse to real numbers.
 
@@ -79,15 +89,21 @@ numbers inflate). BLIF benchmarks (clma) skip synthesis; Verilog (eltwise/conv/l
 
 ---
 
-## Ordering, checkpointing, wall-time
-- Order: 0 -> 1 -> 2 -> 3 -> 4 (cheap/validation first, heaviest last).
-- Each phase writes its own sqlite DB + logs to the overlay as it completes; a wall-time death
-  loses only the in-progress phase, not finished ones. `collect_results.py` summarizes whatever
-  finished.
-- Wall-time: PACE **inferno allows up to 21 days**, so the full campaign fits in ONE submission
-  (`sbatch run_campaign.sbatch`) — set `--time` generously. Only on **embers** (free, 8h cap) must
-  you split. The script's `PHASES=` env var enables a 3-job split when needed: Job A = Phases 0-1
-  (light), Job B = Phase 2 (medium), Job C = Phases 3-4 (heavy), chained with `sbatch
-  --dependency=afterany:<jobid>`.
+## Parallel layout, checkpointing, wall-time (v2)
+- **Worker array** (`worker_array.sbatch`, default 16 jobs @ 8 cpu / 32 GB / 16 h): every worker
+  loops the study queue `columns -> tpe -> nsga2 -> random`, contributing one trial at a time to
+  the shared JournalStorage study until its target count is reached. One flow run is ~10-20 min,
+  so 16 workers evaluate ~16 architectures at once with zero contention (separate jobs, own dirs).
+- **Extras job** (`extras.sbatch`, 8 cpu / 64 GB): smoke -> 2D-vs-3D -> conv/lstm, sequential,
+  continue-on-fail. 64 GB because conv/lstm synthesis is the RAM driver.
+- **Collect job** (`collect.sbatch`, afterany): walks all workers' `tasks_run` + the journals,
+  writes `campaign_work/<stamp>/campaign_summary.md`. Runs even after a partial campaign.
+- Checkpointing: the journal files persist every finished trial; a wall-time death loses only
+  in-flight trials. Re-running `submit_campaign.sh` with the same `WORK_ROOT` resumes the studies
+  (`load_if_exists`) and tops them up to the target counts.
+- Reference baseline: computed ONCE per study (first worker claims it via study user attrs; the
+  rest poll), not once per worker.
+- Disk: per-trial RRGs (~1-3 GB) are deleted after each trial (`KEEP_RRG=1` disables); the
+  journals + logs + results are small. No overlay, no 50 GB ceiling.
 - All time/mem numbers are estimates from laptop behavior scaled to cluster; **tune to the
   account's queue limits** (`-A` account, partition wall-time caps).
