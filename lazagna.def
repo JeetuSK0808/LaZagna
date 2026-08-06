@@ -80,7 +80,7 @@ From: ubuntu:24.04
     cd /opt/LaZagna
 
     # --- Python deps in a CONTAINER venv (NOT $HOME: PACE auto-mounts $HOME and a
-    #     ~/venv or ~/.local would shadow this; see --no-home in run_campaign.sbatch). ---
+    #     ~/venv or ~/.local would shadow this; see --no-home in worker_array.sbatch). ---
     python3 -m venv /opt/venv
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip
     /opt/venv/bin/pip install --no-cache-dir -r /opt/LaZagna/requirements.txt

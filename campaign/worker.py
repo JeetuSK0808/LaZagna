@@ -22,7 +22,9 @@ WORKER_ID = int(os.environ.get("WORKER_ID", os.environ.get("SLURM_ARRAY_TASK_ID"
 SEEDS = int(os.environ.get("SEEDS", "3"))
 TRIALS_COLUMNS = int(os.environ.get("TRIALS_COLUMNS", "35"))
 TRIALS_SAMPLER = int(os.environ.get("TRIALS_SAMPLER", "15"))
-STUDIES = os.environ.get("STUDIES", "columns tpe nsga2 random").split()
+# Accept space- or comma-separated (commas survive sbatch --export unmangled).
+import re as _re
+STUDIES = [s for s in _re.split(r"[,\s]+", os.environ.get("STUDIES", "columns tpe nsga2 random")) if s]
 KEEP_RRG = bool(os.environ.get("KEEP_RRG"))
 
 os.chdir(ROOT)

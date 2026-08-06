@@ -17,8 +17,8 @@
 #   5. submit the COLLECT job (afterany) -> $WORK_ROOT/campaign_summary.md
 #
 # Tuning (env vars): ACCOUNT, QUEUE (inferno), N_WORKERS (16), SEEDS (3),
-#   TRIALS_COLUMNS (35), TRIALS_SAMPLER (15), STUDIES ("columns tpe nsga2 random"),
-#   WORK_ROOT (default ./campaign_work/<timestamp>).
+#   TRIALS_COLUMNS (35), TRIALS_SAMPLER (15), STUDIES (comma-separated, e.g. "columns,tpe";
+#   default all four), WORK_ROOT (default ./campaign_work/<timestamp>).
 # Light first run:  N_WORKERS=2 SEEDS=1 TRIALS_COLUMNS=2 TRIALS_SAMPLER=2 bash submit_campaign.sh
 # ============================================================================
 set -euo pipefail

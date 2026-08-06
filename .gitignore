@@ -105,3 +105,18 @@ benchmarks/koios_proxy/
 setup_files/koios_*.yaml
 setup_files/vertical_sweep*.yaml
 setup_files/simple_test_koios.yaml
+
+# campaign run outputs (created by submit_campaign.sh)
+campaign_work/
+worker_*.out
+worker_*.err
+extras_*.out
+extras_*.err
+collect_*.out
+collect_*.err
+build_*.out
+build_*.err
+campaign_*.out
+campaign_*.err
+*.sif
+*_overlay.img

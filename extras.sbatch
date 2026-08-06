@@ -28,6 +28,11 @@ W="$WORK_ROOT/extras"
 
 [ -f "$SIF" ] || { echo "FATAL: missing SIF $SIF"; exit 1; }
 
+# Stale-image guard (old .sif lacks the bind mountpoints AND bakes old code).
+if ! apptainer exec --no-home --cleanenv "$SIF" test -d /opt/LaZagna/base_rrg; then
+  echo "FATAL: lazagna.sif is STALE. rm lazagna.sif && bash submit_campaign.sh"; exit 1
+fi
+
 mkdir -p "$W"/{arch_files,base_rrg,rrg_3d,tasks_run,results} "$WORK_ROOT"/{journal,bench}
 if [ ! -e "$W/arch_files/.seeded" ]; then
   apptainer exec --no-home --cleanenv "$SIF" cp -a /opt/LaZagna/arch_files/. "$W/arch_files/"
@@ -41,7 +46,12 @@ BINDS=(-B "$W/arch_files:/opt/LaZagna/arch_files"
        -B "$W/results:/opt/LaZagna/results"
        -B "$WORK_ROOT:/work"
        -B "$CAMPAIGN/campaign:/campaign")
-APP=(apptainer exec --no-home --cleanenv "${BINDS[@]}" --env "WORK=/work" "$SIF")
+
+export APPTAINERENV_WORK="/work"
+for v in CW HB_GRID HB_CW; do   # phase 3/4 tunables, if the user set them
+  if [ -n "${!v:-}" ]; then export "APPTAINERENV_$v=${!v}"; fi
+done
+APP=(apptainer exec --no-home --cleanenv "${BINDS[@]}" "$SIF")
 
 run_phase() {  # $1 = label ; $2.. = command
   local label="$1"; shift

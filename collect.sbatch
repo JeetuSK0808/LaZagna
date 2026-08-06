@@ -22,7 +22,12 @@ CAMPAIGN="${CAMPAIGN:-$SLURM_SUBMIT_DIR}"
 SIF="${SIF:-$CAMPAIGN/lazagna.sif}"
 WORK_ROOT="${WORK_ROOT:?WORK_ROOT not set (use submit_campaign.sh)}"
 
+if ! apptainer exec --no-home --cleanenv "$SIF" test -d /opt/LaZagna/base_rrg; then
+  echo "FATAL: lazagna.sif is STALE. rm lazagna.sif && bash submit_campaign.sh"; exit 1
+fi
+
+export APPTAINERENV_WORK="/work"
 apptainer exec --no-home --cleanenv \
-  -B "$WORK_ROOT:/work" -B "$CAMPAIGN/campaign:/campaign" --env "WORK=/work" \
+  -B "$WORK_ROOT:/work" -B "$CAMPAIGN/campaign:/campaign" \
   "$SIF" python3 /campaign/collect_results.py /work/campaign_summary.md /work
 echo "SUMMARY: $WORK_ROOT/campaign_summary.md"

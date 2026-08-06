@@ -33,6 +33,14 @@ W="$WORK_ROOT/worker_$ID"
 
 [ -f "$SIF" ] || { echo "FATAL: missing SIF $SIF"; exit 1; }
 
+# Stale-image guard: the bind mountpoints below only exist in images built from the
+# parallel-v2 .def. An old lazagna.sif also bakes old code. Fail loud, early.
+if ! apptainer exec --no-home --cleanenv "$SIF" test -d /opt/LaZagna/base_rrg; then
+  echo "FATAL: lazagna.sif is STALE (predates the parallel-campaign update)."
+  echo "       rm lazagna.sif && bash submit_campaign.sh   (it rebuilds the image)"
+  exit 1
+fi
+
 # Per-worker writable dirs for everything the flow writes inside /opt/LaZagna.
 mkdir -p "$W"/{arch_files,base_rrg,rrg_3d,tasks_run,results} "$WORK_ROOT"/{journal,bench}
 
@@ -50,10 +58,18 @@ BINDS=(-B "$W/arch_files:/opt/LaZagna/arch_files"
        -B "$WORK_ROOT:/work"
        -B "$CAMPAIGN/campaign:/campaign")
 
+# APPTAINERENV_* survives --cleanenv and dodges --env's comma-list parsing (values with
+# spaces, e.g. STUDIES, would be mangled there).
+export APPTAINERENV_WORKER_ID="$ID"
+export APPTAINERENV_WORK="/work"
+export APPTAINERENV_SEEDS="${SEEDS:-3}"
+export APPTAINERENV_TRIALS_COLUMNS="${TRIALS_COLUMNS:-35}"
+export APPTAINERENV_TRIALS_SAMPLER="${TRIALS_SAMPLER:-15}"
+export APPTAINERENV_STUDIES="${STUDIES:-columns tpe nsga2 random}"
+[ -n "${KEEP_RRG:-}" ] && export APPTAINERENV_KEEP_RRG="$KEEP_RRG"
+
 echo "WORKER $ID START $(date -Is)  work=$W"
-apptainer exec --no-home --cleanenv "${BINDS[@]}" \
-  --env "WORKER_ID=$ID,WORK=/work,SEEDS=${SEEDS:-3},TRIALS_COLUMNS=${TRIALS_COLUMNS:-35},TRIALS_SAMPLER=${TRIALS_SAMPLER:-15},STUDIES=${STUDIES:-columns tpe nsga2 random}" \
-  "$SIF" python3 /campaign/worker.py
+apptainer exec --no-home --cleanenv "${BINDS[@]}" "$SIF" python3 /campaign/worker.py
 rc=$?
 echo "WORKER $ID DONE rc=$rc $(date -Is)"
 exit $rc
