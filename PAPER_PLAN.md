@@ -176,8 +176,10 @@ warning for anyone doing this kind of study.
 
 ## 8. Ordering of work
 
-1. **Now, during PACE downtime:** Figures 1 to 3 and Listing 1, Table 1, related work reading,
-   and the resource-matching decision from question 1. All of this is compute-free.
-2. **When PACE is back:** the campaign, then Tables 2 and 3 and Figure 4.
+1. **In progress, compute-free:** Figures 1 to 3 and Listing 1, Table 1, related work reading,
+   and the resource-matching decision from question 1.
+2. **In parallel, as soon as the rerun happens:** the campaign, then Tables 2 and 3 and Figure 4.
+   The current sampling is fine to run as-is (block counts can be reported per trial and
+   conditioned on in analysis), so this should not wait on question 1.
 3. **Then:** cross-benchmark run for RQ4 and Figure 6, which decides how strong the story is.
 4. **Then:** batch width sweep for RQ3 if we want it quantitative, then full draft.
