@@ -17,8 +17,11 @@
 #   5. submit the COLLECT job (afterany) -> $WORK_ROOT/campaign_summary.md
 #
 # Tuning (env vars): ACCOUNT, QUEUE (inferno), N_WORKERS (16), SEEDS (3),
-#   TRIALS_COLUMNS (35), TRIALS_SAMPLER (15), STUDIES (comma-separated, e.g. "columns,tpe";
-#   default all four), WORK_ROOT (default ./campaign_work/<timestamp>).
+#   TRIALS_COLUMNS (35), TRIALS_SAMPLER (15, or 60 when BATCHES is set), STUDIES
+#   (comma-separated, e.g. "columns,tpe"; default all four), BATCHES (batch-width ablation,
+#   e.g. "1 10 25 50 100"), WORK_ROOT (default ./campaign_work/<timestamp>).
+#
+# RQ3 ablation:  BATCHES="1 10 25 50 100" STUDIES="tpe,nsga2,random" bash submit_campaign.sh
 # Light first run:  N_WORKERS=2 SEEDS=1 TRIALS_COLUMNS=2 TRIALS_SAMPLER=2 bash submit_campaign.sh
 # ============================================================================
 set -euo pipefail
@@ -27,6 +30,17 @@ HERE="$PWD"
 
 QUEUE="${QUEUE:-inferno}"
 N_WORKERS="${N_WORKERS:-16}"
+# RQ3 batch-width ablation. Set BATCHES to a space-separated list to submit one worker array
+# per width, each writing its own suffixed study (e.g. clma_sampler_tpe_b25). Ismael asked for
+# 1 10 25 50 100. Unset means a single array at N_WORKERS, as before.
+BATCHES="${BATCHES:-}"
+# Wall time per worker job. The default directive in worker_array.sbatch is 16 h, which is fine
+# at wide batches but NOT at batch 1: 60 trials x 3 samplers x ~15 min is roughly 45 h of
+# sequential work. A CLI --time overrides the directive, so low-batch arms get more room.
+WALL="${WALL:-}"
+# 15 trials per sampler was not enough to separate TPE from random in the 2026-08-14 run
+# (spread between samplers was smaller than seed noise), so the ablation defaults higher.
+[ -n "$BATCHES" ] && TRIALS_SAMPLER="${TRIALS_SAMPLER:-60}"
 
 # --- 1. Charge account -------------------------------------------------------
 ACCT="${ACCOUNT:-}"
@@ -78,18 +92,38 @@ fi
 # --- 5. Submit workers + extras + collect -------------------------------------
 EXPORTS="ALL,WORK_ROOT=$WORK_ROOT"   # only WORK_ROOT rides --export; tunables via campaign.env
 
-WID="$(sbatch --parsable -A "$ACCT" -q "$QUEUE" $DEP \
-        --array=0-$((N_WORKERS-1)) --export="$EXPORTS" worker_array.sbatch)"
-echo "  worker array: $WID (${N_WORKERS} jobs)"
+WORKER_IDS=""
+if [ -n "$BATCHES" ]; then
+  echo "  batch ablation: widths [$BATCHES], $TRIALS_SAMPLER trials per sampler per width"
+  for B in $BATCHES; do
+    # Sequential work per worker scales as trials/batch, so give narrow arms a longer wall.
+    if [ -n "$WALL" ]; then
+      W="$WALL"
+    elif [ "$B" -le 2 ]; then W="72:00:00"
+    elif [ "$B" -le 10 ]; then W="36:00:00"
+    else W="16:00:00"
+    fi
+    JID="$(sbatch --parsable -A "$ACCT" -q "$QUEUE" $DEP --time="$W" \
+            --array=0-$((B-1)) --export="$EXPORTS,BATCH=$B" worker_array.sbatch)"
+    echo "    batch $B: job $JID ($B concurrent workers, wall $W)"
+    WORKER_IDS="$WORKER_IDS:$JID"
+  done
+else
+  JID="$(sbatch --parsable -A "$ACCT" -q "$QUEUE" $DEP \
+          --array=0-$((N_WORKERS-1)) --export="$EXPORTS" worker_array.sbatch)"
+  echo "  worker array: $JID (${N_WORKERS} jobs)"
+  WORKER_IDS=":$JID"
+fi
+WID="${WORKER_IDS#:}"
 
 EID="$(sbatch --parsable -A "$ACCT" -q "$QUEUE" $DEP --export="$EXPORTS" extras.sbatch)"
 echo "  extras job:   $EID"
 
 CID="$(sbatch --parsable -A "$ACCT" -q "$QUEUE" \
-        --dependency="afterany:$WID:$EID" --export="$EXPORTS" collect.sbatch)"
+        --dependency="afterany${WORKER_IDS}:$EID" --export="$EXPORTS" collect.sbatch)"
 echo "  collect job:  $CID (runs after workers + extras)"
 
 echo
 echo "Submitted. Watch with:  squeue -u $USER"
 echo "Summary lands in:       $WORK_ROOT/campaign_summary.md"
-echo "Study progress:         grep complete worker_${WID}_*.out | tail"
+echo "Study progress:         grep complete worker_*.out | tail"

@@ -67,6 +67,9 @@ export APPTAINERENV_SEEDS="${SEEDS:-3}"
 export APPTAINERENV_TRIALS_COLUMNS="${TRIALS_COLUMNS:-35}"
 export APPTAINERENV_TRIALS_SAMPLER="${TRIALS_SAMPLER:-15}"
 export APPTAINERENV_STUDIES="${STUDIES:-columns tpe nsga2 random}"
+# Batch width for the RQ3 ablation. Empty means "not an ablation run" and study names
+# stay unsuffixed; a value gives each width its own study (see campaign/worker.py).
+export APPTAINERENV_BATCH="${BATCH:-}"
 [ -n "${KEEP_RRG:-}" ] && export APPTAINERENV_KEEP_RRG="$KEEP_RRG"
 
 echo "WORKER $ID START $(date -Is)  work=$W"

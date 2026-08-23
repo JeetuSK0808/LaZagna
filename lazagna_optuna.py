@@ -116,8 +116,14 @@ class SearchConfig:
     delay_ratio_range: tuple[float, float] = (0.4, 1.2)
     connectivity_choices: tuple[float, ...] = (0.33, 0.66, 1.0)
     column_block_choices: tuple[str, ...] = (CLB, DSP, BRAM)
-    clb_col_fraction: float = 0.68
-    dsp_col_fraction: float = 0.10
+    # Column composition is FIXED per trial (agreed with Ismael, 2026-08-22): every trial
+    # gets identical block counts and only the arrangement varies, so RQ2 measures placement
+    # quality rather than resource composition. Order: (CLB, DSP, BRAM). 12.5/12.5/75 is the
+    # convention Ismael cited from prior work; override per benchmark as needed.
+    block_ratios: tuple[float, float, float] = (0.75, 0.125, 0.125)
+    clb_col_fraction: float = 0.68   # legacy, only used if fixed_block_counts=False
+    dsp_col_fraction: float = 0.10   # legacy
+    fixed_block_counts: bool = True
     type_sb_choices: tuple[str, ...] = ("3d_sb",)
     connection_type_choices: tuple[str, ...] = ("subset",)
     fine_connectivity_choices: tuple[float, ...] = (0.1, 0.2, 0.33, 0.5, 0.66, 0.8, 1.0)
@@ -133,20 +139,46 @@ def sample_layout(trial: optuna.Trial, cfg: SearchConfig) -> LayoutSpec:
     return LayoutSpec(family=family, edge_fraction=frac, asymmetry=asymmetry, separate_dsp_bram=separate)
 
 
+def column_counts(cfg: SearchConfig) -> tuple[int, int, int]:
+    """Exact per-layer column counts (CLB, DSP, BRAM) from cfg.block_ratios.
+    BRAM and DSP are rounded, CLB absorbs the remainder so the total always matches."""
+    n = cfg.width - 2
+    _, dsp_f, bram_f = cfg.block_ratios
+    n_dsp = int(round(dsp_f * n))
+    n_bram = int(round(bram_f * n))
+    return n - n_dsp - n_bram, n_dsp, n_bram
+
+
 def sample_columns(trial: optuna.Trial, cfg: SearchConfig) -> ColumnLayoutSpec:
-    n_interior = cfg.width - 2
-    dsp_hi = cfg.clb_col_fraction + cfg.dsp_col_fraction
+    """Sample an ARRANGEMENT of a fixed multiset of columns.
+
+    Each column gets a continuous key; the highest-ranked keys become BRAM, the next
+    become DSP, the rest CLB. That guarantees every trial has identical block counts
+    (so a win cannot come from extra hard blocks) while keeping the same dimensionality
+    and a smooth space for TPE. Set fixed_block_counts=False for the old independent
+    per-column sampling, which let DSP columns vary roughly 1 to 6 between trials."""
+    n = cfg.width - 2
+    if not cfg.fixed_block_counts:
+        dsp_hi = cfg.clb_col_fraction + cfg.dsp_col_fraction
+        cols = []
+        for layer in range(2):
+            layer_cols = []
+            for i in range(n):
+                r = trial.suggest_float(f"L{layer}c{i}", 0.0, 1.0)
+                layer_cols.append(CLB if r < cfg.clb_col_fraction else (DSP if r < dsp_hi else BRAM))
+            cols.append(layer_cols)
+        return ColumnLayoutSpec(columns=cols)
+
+    _, n_dsp, n_bram = column_counts(cfg)
     cols = []
     for layer in range(2):
-        layer_cols = []
-        for i in range(n_interior):
-            r = trial.suggest_float(f"L{layer}c{i}", 0.0, 1.0)
-            if r < cfg.clb_col_fraction:
-                layer_cols.append(CLB)
-            elif r < dsp_hi:
-                layer_cols.append(DSP)
-            else:
-                layer_cols.append(BRAM)
+        keys = [(trial.suggest_float(f"L{layer}c{i}", 0.0, 1.0), i) for i in range(n)]
+        order = [i for _, i in sorted(keys, reverse=True)]
+        layer_cols = [CLB] * n
+        for i in order[:n_bram]:
+            layer_cols[i] = BRAM
+        for i in order[n_bram:n_bram + n_dsp]:
+            layer_cols[i] = DSP
         cols.append(layer_cols)
     return ColumnLayoutSpec(columns=cols)
 
@@ -197,18 +229,59 @@ def _run_one(cfg: SearchConfig, spec_or_none, exp_name: str, arch_type: str,
     return metrics, None
 
 def reference_columns(cfg: SearchConfig) -> ColumnLayoutSpec:
-    n_interior = cfg.width - 2
-    pattern = []
-    for i in range(n_interior):
-        if i % 5 == 0:
-            pattern.append(BRAM)
-        elif i % 10 == 3:
-            pattern.append(DSP)
-        else:
-            pattern.append(CLB)
+    """Reference layout with the SAME block counts as every sampled trial (evenly spread),
+    so the reference is resource-matched to the search and the comparison is placement-only."""
+    n = cfg.width - 2
+    _, n_dsp, n_bram = column_counts(cfg)
+    pattern = [CLB] * n
+    if n_bram:
+        step = n / n_bram
+        for k in range(n_bram):
+            pattern[min(n - 1, int(k * step))] = BRAM
+    if n_dsp:
+        free = [i for i in range(n) if pattern[i] == CLB]
+        step = len(free) / n_dsp if n_dsp else 1
+        for k in range(n_dsp):
+            pattern[free[min(len(free) - 1, int(k * step + step / 2))]] = DSP
     return ColumnLayoutSpec(columns=[list(pattern), list(pattern)])
 
-def make_objective(cfg: SearchConfig, block_types=None, study: Optional[optuna.Study] = None):
+
+def baseline_signature(cfg: SearchConfig) -> str:
+    """Identifies a reference run. Excludes , so the TPE / NSGA-II / random studies
+    SHARE one reference instead of each computing its own. In the 2026-08-14 campaign they each
+    ran a separate reference (9.822 / 9.874 / 9.977 ns), which made the per-study "% vs
+    reference" numbers non-comparable across samplers."""
+    import hashlib
+    key = "|".join(str(x) for x in (
+        os.path.basename(cfg.benchmark_dir.rstrip("/")), cfg.is_verilog,
+        cfg.width, cfg.height, cfg.channel_width, cfg.arch_type, cfg.seeds,
+        cfg.search_mode, cfg.block_ratios, cfg.fixed_block_counts, cfg.template_path,
+    ))
+    return hashlib.sha1(key.encode()).hexdigest()[:12]
+
+
+def _read_baseline(path: str):
+    import json
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        if d.get("cpd") and d.get("wl"):
+            return d["cpd"], d["wl"]
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _write_baseline(path: str, cpd: float, wl: float) -> None:
+    import json
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump({"cpd": cpd, "wl": wl}, f)
+    os.replace(tmp, path)   # atomic, so a concurrent reader never sees a partial file
+
+
+def make_objective(cfg: SearchConfig, block_types=None, study: Optional[optuna.Study] = None,
+                   shared_baseline_path: Optional[str] = None):
     """When `study` is given (parallel workers sharing storage), the reference baseline is
     computed ONCE and shared through study user attrs: the first worker to arrive claims it
     (claim -> re-read guard), the rest poll. Without `study`, behaves as before (per-process)."""
@@ -224,6 +297,37 @@ def make_objective(cfg: SearchConfig, block_types=None, study: Optional[optuna.S
     def ensure_baseline():
         import time as _t
         if baseline["cpd"] is not None:
+            return
+        # Shared-file path: every study using the same benchmark/grid/ratios reuses ONE
+        # reference run, so cross-sampler comparisons are against a common denominator.
+        if shared_baseline_path:
+            got = _read_baseline(shared_baseline_path)
+            if got is None:
+                lock = shared_baseline_path + ".lock"
+                try:
+                    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    os.close(fd)
+                    owner = True
+                except FileExistsError:
+                    owner = False
+                if owner:
+                    cpd, wl = _compute_baseline()
+                    _write_baseline(shared_baseline_path, cpd, wl)
+                    got = (cpd, wl)
+                else:
+                    for _ in range(180):        # reference run is ~10-20 min
+                        _t.sleep(20)
+                        got = _read_baseline(shared_baseline_path)
+                        if got:
+                            break
+                    if got is None:             # owner died holding the lock
+                        cpd, wl = _compute_baseline()
+                        _write_baseline(shared_baseline_path, cpd, wl)
+                        got = (cpd, wl)
+            baseline["cpd"], baseline["wl"] = got
+            if study is not None and study.user_attrs.get("baseline_cpd") is None:
+                study.set_user_attr("baseline_cpd", got[0])
+                study.set_user_attr("baseline_wl", got[1])
             return
         if study is None:
             baseline["cpd"], baseline["wl"] = _compute_baseline()

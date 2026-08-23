@@ -26,12 +26,17 @@ TRIALS_SAMPLER = int(os.environ.get("TRIALS_SAMPLER", "15"))
 import re as _re
 STUDIES = [s for s in _re.split(r"[,\s]+", os.environ.get("STUDIES", "columns tpe nsga2 random")) if s]
 KEEP_RRG = bool(os.environ.get("KEEP_RRG"))
+# Batch width = how many workers run this study concurrently. Each width gets its own
+# study so the RQ3 ablation (1, 10, 25, 50, 100) can be compared. Set by submit_campaign.sh.
+BATCH = os.environ.get("BATCH", "")
+SUFFIX = f"_b{BATCH}" if BATCH else ""
 
 os.chdir(ROOT)
 sys.path.insert(0, ROOT)
 
 import optuna
-from lazagna_optuna import SearchConfig, make_objective, _make_sampler, journal_storage
+from lazagna_optuna import (SearchConfig, make_objective, _make_sampler, journal_storage,
+                            baseline_signature, column_counts)
 
 # Stale-image guard: these features live inside the image (/opt/LaZagna). If Ismael reuses an
 # old lazagna.sif, fail loud instead of crashing cryptically mid-run.
@@ -89,10 +94,10 @@ def sampler_cfg(sampler: str) -> SearchConfig:
 
 
 STUDY_DEFS = {
-    "columns": dict(cfg=columns_cfg, target=TRIALS_COLUMNS, study="eltwise_columns"),
-    "tpe":     dict(cfg=lambda: sampler_cfg("tpe"),    target=TRIALS_SAMPLER, study="clma_sampler_tpe"),
-    "nsga2":   dict(cfg=lambda: sampler_cfg("nsga2"),  target=TRIALS_SAMPLER, study="clma_sampler_nsga2"),
-    "random":  dict(cfg=lambda: sampler_cfg("random"), target=TRIALS_SAMPLER, study="clma_sampler_random"),
+    "columns": dict(cfg=columns_cfg, target=TRIALS_COLUMNS, study="eltwise_columns" + SUFFIX),
+    "tpe":     dict(cfg=lambda: sampler_cfg("tpe"),    target=TRIALS_SAMPLER, study="clma_sampler_tpe" + SUFFIX),
+    "nsga2":   dict(cfg=lambda: sampler_cfg("nsga2"),  target=TRIALS_SAMPLER, study="clma_sampler_nsga2" + SUFFIX),
+    "random":  dict(cfg=lambda: sampler_cfg("random"), target=TRIALS_SAMPLER, study="clma_sampler_random" + SUFFIX),
 }
 
 COUNTED = (optuna.trial.TrialState.RUNNING, optuna.trial.TrialState.COMPLETE,
@@ -125,7 +130,10 @@ def contribute(key: str) -> None:
     storage = journal_storage(os.path.join(WORK, "journal", f"{sd['study']}.log"))
     study = optuna.create_study(directions=["minimize", "minimize"], study_name=sd["study"],
                                 storage=storage, load_if_exists=True, sampler=_make_sampler(cfg))
-    objective = make_objective(cfg, study=study)
+    # One reference run shared by every study with the same benchmark/grid/ratios, so the
+    # sampler comparison uses a common denominator (see baseline_signature).
+    bpath = os.path.join(WORK, "journal", "baseline_" + baseline_signature(cfg) + ".json")
+    objective = make_objective(cfg, study=study, shared_baseline_path=bpath)
     while n_started(study) < sd["target"]:
         try:
             study.optimize(objective, n_trials=1)
@@ -142,8 +150,10 @@ def contribute(key: str) -> None:
 if __name__ == "__main__":
     os.makedirs(os.path.join(WORK, "journal"), exist_ok=True)
     time.sleep(WORKER_ID * 3)  # stagger startup so 16 workers don't hammer the lock at once
-    print(f"[w{WORKER_ID}] start: studies={STUDIES} seeds={SEEDS} "
-          f"targets: columns={TRIALS_COLUMNS} sampler={TRIALS_SAMPLER}", flush=True)
+    cc = column_counts(columns_cfg())
+    print(f"[w{WORKER_ID}] start: studies={STUDIES} seeds={SEEDS} batch={BATCH or 'n/a'} "
+          f"targets: columns={TRIALS_COLUMNS} sampler={TRIALS_SAMPLER} "
+          f"cols/layer CLB/DSP/BRAM={cc}", flush=True)
     for key in STUDIES:
         if key not in STUDY_DEFS:
             print(f"[w{WORKER_ID}] unknown study '{key}' (skipping)", flush=True)

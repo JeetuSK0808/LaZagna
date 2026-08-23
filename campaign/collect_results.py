@@ -105,7 +105,11 @@ def main():
         lines.append("| (none succeeded yet) | | | | | | | |")
 
     lines += ["", f"Total verified configs: {len(groups)}", "", "## Optuna studies (journal)", ""]
-    for name in ("eltwise_columns", "clma_sampler_tpe", "clma_sampler_nsga2", "clma_sampler_random"):
+    # Discover studies from the journal dir so batch-ablation suffixes (…_b25) are picked up.
+    found = sorted(os.path.basename(p)[:-4]
+                   for p in glob.glob(os.path.join(WORK, "journal", "*.log")))
+    for name in found or ["eltwise_columns", "clma_sampler_tpe",
+                          "clma_sampler_nsga2", "clma_sampler_random"]:
         s = study_summary(name)
         if s is None:
             lines.append(f"- **{name}**: (no journal)")
