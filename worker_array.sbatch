@@ -70,6 +70,7 @@ export APPTAINERENV_STUDIES="${STUDIES:-columns tpe nsga2 random}"
 # Batch width for the RQ3 ablation. Empty means "not an ablation run" and study names
 # stay unsuffixed; a value gives each width its own study (see campaign/worker.py).
 export APPTAINERENV_BATCH="${BATCH:-}"
+export APPTAINERENV_CW="${CW:-300}"   # lab standard channel width
 [ -n "${KEEP_RRG:-}" ] && export APPTAINERENV_KEEP_RRG="$KEEP_RRG"
 
 echo "WORKER $ID START $(date -Is)  work=$W"

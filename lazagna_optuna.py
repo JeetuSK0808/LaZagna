@@ -92,7 +92,7 @@ class SearchConfig:
     height: int = 12
     width_2d: int = 17
     height_2d: int = 17
-    channel_width: int = 100
+    channel_width: int = 300
     seeds: int = 1
     arch_type: str = "3d_sb"
     search_mode: str = "layout"
@@ -119,7 +119,9 @@ class SearchConfig:
     # Column composition is FIXED per trial (agreed with Ismael, 2026-08-22): every trial
     # gets identical block counts and only the arrangement varies, so RQ2 measures placement
     # quality rather than resource composition. Order: (CLB, DSP, BRAM). 12.5/12.5/75 is the
-    # convention Ismael cited from prior work; override per benchmark as needed.
+    # convention from prior work and is held CONSTANT across benchmarks (Ismael, 2026-09-08:
+    # tuning the ratio to a single benchmark is not a useful architecture). Per-workload ratio
+    # optimization is a possible future direction, not something to vary per run here.
     block_ratios: tuple[float, float, float] = (0.75, 0.125, 0.125)
     clb_col_fraction: float = 0.68   # legacy, only used if fixed_block_counts=False
     dsp_col_fraction: float = 0.10   # legacy

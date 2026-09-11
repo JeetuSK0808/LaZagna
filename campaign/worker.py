@@ -20,6 +20,8 @@ ROOT = os.environ.get("LAZAGNA_ROOT", "/opt/LaZagna")
 WORK = os.environ.get("WORK", "/work")
 WORKER_ID = int(os.environ.get("WORKER_ID", os.environ.get("SLURM_ARRAY_TASK_ID", "0")))
 SEEDS = int(os.environ.get("SEEDS", "3"))
+# Fixed channel width for every study. Overridable but 300 is the lab standard.
+CW = int(os.environ.get("CW", "300"))
 TRIALS_COLUMNS = int(os.environ.get("TRIALS_COLUMNS", "35"))
 TRIALS_SAMPLER = int(os.environ.get("TRIALS_SAMPLER", "15"))
 # Accept space- or comma-separated (commas survive sbatch --export unmangled).
@@ -69,7 +71,10 @@ def columns_cfg() -> SearchConfig:
         benchmark_dir=ensure_bench("koios_elt", "benchmarks/koios/eltwise_layer.v"),
         is_verilog=True,
         width=36, height=36, width_2d=44, height_2d=44,
-        channel_width=150, seeds=SEEDS,
+        # cw 300 everywhere: the lab has used 300 in all prior work, so results stay
+        # comparable. CW is pinned on the vpr line (script_editing.append_cw_to_script),
+        # so VTR never runs its own channel-width search.
+        channel_width=CW, seeds=SEEDS,
         arch_type="combined", search_mode="columns",
         template_path="arch_files/templates/dsp_bram/vtr_arch_dsp_bram.xml",
         connectivity_choices=(1.0,),
@@ -85,7 +90,7 @@ def sampler_cfg(sampler: str) -> SearchConfig:
         benchmark_dir=os.path.join(ROOT, "benchmarks", "MCNC_benchmarks", "clma"),
         is_verilog=False,
         width=30, height=30, width_2d=42, height_2d=42,
-        channel_width=100, seeds=SEEDS,
+        channel_width=CW, seeds=SEEDS,
         arch_type="3d_sb", search_mode="connectivity",
         type_sb_choices=("3d_sb",),
         sampler=sampler, parallel=True,
@@ -151,9 +156,9 @@ if __name__ == "__main__":
     os.makedirs(os.path.join(WORK, "journal"), exist_ok=True)
     time.sleep(WORKER_ID * 3)  # stagger startup so 16 workers don't hammer the lock at once
     cc = column_counts(columns_cfg())
-    print(f"[w{WORKER_ID}] start: studies={STUDIES} seeds={SEEDS} batch={BATCH or 'n/a'} "
-          f"targets: columns={TRIALS_COLUMNS} sampler={TRIALS_SAMPLER} "
-          f"cols/layer CLB/DSP/BRAM={cc}", flush=True)
+    print(f"[w{WORKER_ID}] start: studies={STUDIES} seeds={SEEDS} cw={CW} "
+          f"batch={BATCH or 'n/a'} targets: columns={TRIALS_COLUMNS} "
+          f"sampler={TRIALS_SAMPLER} cols/layer CLB/DSP/BRAM={cc}", flush=True)
     for key in STUDIES:
         if key not in STUDY_DEFS:
             print(f"[w{WORKER_ID}] unknown study '{key}' (skipping)", flush=True)

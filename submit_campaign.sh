@@ -72,7 +72,7 @@ echo "Work dir: $WORK_ROOT"
 # would mangle values like STUDIES="columns,tpe"). Jobs source this if present.
 ENVF="$WORK_ROOT/campaign.env"
 : > "$ENVF"
-for v in SEEDS TRIALS_COLUMNS TRIALS_SAMPLER STUDIES KEEP_RRG CW HB_GRID HB_CW; do
+for v in SEEDS TRIALS_COLUMNS TRIALS_SAMPLER STUDIES KEEP_RRG CW HB_GRID HB_CW; do  # CW defaults to 300 in-code
   if [ -n "${!v:-}" ]; then printf '%s=%q\n' "$v" "${!v}" >> "$ENVF"; fi
 done
 [ -s "$ENVF" ] && { echo "Tunables ($ENVF):"; cat "$ENVF"; }

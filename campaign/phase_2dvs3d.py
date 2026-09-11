@@ -17,8 +17,10 @@ from lazagna_optuna import SearchConfig, _run_one
 from layout_space import NAMED_LAYOUTS
 
 SEEDS = int(sys.argv[1]) if len(sys.argv) > 1 else 3
-CW_ENV = os.environ.get("CW")
-CW_CANDIDATES = [int(CW_ENV)] if CW_ENV else [200, 300, 400]
+# Fixed at the lab standard of 300 for both the 2D and 3D sides, so the comparison is at
+# one width and there is no probing. Previously this tried 200, 300 and 400 in turn, which
+# cost a full flow run per failed width.
+CW = int(os.environ.get("CW", "300"))
 TAG = "e2d3d"
 
 # Benchmark dir lives on the HOST work dir (container benchmarks/ is read-only; the old
@@ -31,7 +33,7 @@ cfg = SearchConfig(
     benchmark_dir=BENCH_DIR,
     is_verilog=True,
     width=36, height=36, width_2d=44, height_2d=44,
-    channel_width=200, seeds=SEEDS,
+    channel_width=CW, seeds=SEEDS,
     arch_type="combined", search_mode="columns",
     template_path="arch_files/templates/dsp_bram/vtr_arch_dsp_bram.xml",
     template_2d_path="arch_files/templates/dsp_bram/vtr_2d_arch_dsp_bram.xml",
@@ -51,21 +53,16 @@ if __name__ == "__main__":
     ensure_eltwise()
     aligned = NAMED_LAYOUTS["aligned"]
 
-    # --- find a cw at which the real 1-layer 2D arch routes eltwise ---
-    base = None
-    chosen_cw = None
-    for cw in CW_CANDIDATES:
-        cfg.channel_width = cw
-        print(f"[2D baseline] trying cw={cw} ...", flush=True)
-        m, err = _run_one(cfg, aligned, f"{TAG}base{cw}", "2d", 1.0, 0.739)
-        if m is not None:
-            base = m; chosen_cw = cw
-            print(f"[2D baseline] routed at cw={cw}: CPD={m[0]:.4e} WL={m[1]:.0f}", flush=True)
-            break
-        print(f"[2D baseline] cw={cw} did not route/parse. stderr tail:\n{(err or '')[-1500:]}", flush=True)
+    # --- 2D baseline at the standard width ---
+    cfg.channel_width = CW
+    print(f"[2D baseline] running at cw={CW} ...", flush=True)
+    base, err = _run_one(cfg, aligned, f"{TAG}base{CW}", "2d", 1.0, 0.739)
     if base is None:
-        print("FATAL: 2D baseline unroutable at all candidate cw - FLAG, needs higher cw", flush=True)
+        print(f"FATAL: 2D baseline did not route at cw={CW} - FLAG. stderr tail:\n"
+              f"{(err or '')[-1500:]}", flush=True)
         sys.exit(1)
+    chosen_cw = CW
+    print(f"[2D baseline] cw={CW}: CPD={base[0]:.4e} WL={base[1]:.0f}", flush=True)
 
     # --- 3D run at the SAME cw (fair comparison), aligned 3D layout ---
     cfg.channel_width = chosen_cw

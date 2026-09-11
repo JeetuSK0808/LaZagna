@@ -18,7 +18,7 @@ sys.path.insert(0, ROOT)
 
 SEEDS = int(sys.argv[1]) if len(sys.argv) > 1 else 1
 GRID = int(os.environ.get("HB_GRID", "44"))     # CONFIRM
-CW = int(os.environ.get("HB_CW", "150"))        # CONFIRM
+CW = int(os.environ.get("HB_CW", "300"))        # lab standard width
 W2D = GRID + 8
 DESIGNS = ["conv_layer", "lstm"]
 
