@@ -120,3 +120,4 @@ campaign_*.out
 campaign_*.err
 *.sif
 *_overlay.img
+PAPER_PLAN.docx
