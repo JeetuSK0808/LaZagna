@@ -5,6 +5,11 @@
 #
 #     bash submit_campaign.sh
 #
+# To characterize the benchmarks first (synthesis + pack only, no place or route, so it is
+# cheap), which tells us which designs actually stress a 12.5/12.5/75 architecture:
+#
+#     CHARACTERIZE=1 bash submit_campaign.sh
+#
 # It will:
 #   1. auto-detect your charge account (override: ACCOUNT=gts-<PI> bash submit_campaign.sh)
 #   2. if lazagna.sif is missing, submit the image build job (build_lazagna.sbatch)
@@ -55,6 +60,28 @@ if [ -z "$ACCT" ]; then
   exit 1
 fi
 echo "Charge account: $ACCT   queue: $QUEUE   workers: $N_WORKERS"
+
+# --- Characterization-only mode ------------------------------------------------
+# Same account auto-detect and the same image, just the cheap synth+pack pass. Run this
+# before committing a full campaign so the placement study is pointed at designs where
+# hard blocks are actually contended.
+if [ -n "${CHARACTERIZE:-}" ]; then
+  [ -e "$HERE/characterize.sbatch" ] || { echo "FATAL: missing characterize.sbatch"; exit 1; }
+  SIF="$HERE/lazagna.sif"
+  DEP=""
+  if [ ! -f "$SIF" ]; then
+    echo "lazagna.sif not found -> queuing build first..."
+    BID="$(sbatch --parsable -A "$ACCT" -q "$QUEUE" build_lazagna.sbatch)"
+    echo "  build job: $BID"
+    DEP="--dependency=afterok:$BID"
+  fi
+  CHID="$(sbatch --parsable -A "$ACCT" -q "$QUEUE" $DEP characterize.sbatch)"
+  echo "  characterization job: $CHID"
+  echo
+  echo "Submitted. Watch with:  squeue -u $USER"
+  echo "Results print to        characterize_${CHID}.out"
+  exit 0
+fi
 
 # --- 2. Sanity: required files ----------------------------------------------
 for f in lazagna.def build_lazagna.sbatch worker_array.sbatch extras.sbatch collect.sbatch \
