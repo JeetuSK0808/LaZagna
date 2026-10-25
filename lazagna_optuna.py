@@ -9,14 +9,16 @@ import optuna
 
 from lazagna_arch_model import (
     ExperimentOptions, GridOptions, BenchmarkOptions, PlacementOptions,
-    SeedOptions, SwitchBlock3DOptions, InterlayerDelayOptions, run_lazagna,
+    SeedOptions, SwitchBlock3DOptions, InterlayerDelayOptions, AdvancedOptions, run_lazagna,
 )
 from layout_space import LayoutSpec, ColumnLayoutSpec, NAMED_LAYOUTS, CLB, DSP, BRAM, IO
-from arch_from_template import render_arch_from_template
+from arch_from_template import render_arch_from_template, tile_heights
 
-def build_architecture(spec: LayoutSpec, width: int, height: int, template_path: str) -> str:
-
-    return render_arch_from_template(template_path, spec, width, height)
+def build_architecture(spec: LayoutSpec, width: int, height: int, template_path: str,
+                       layers: int = 2) -> str:
+    """layers=1 for the 2D baseline: the 2D template has a single die, and writing a two-layer
+    layout into it gave two dies with no vertical routing between them (unroutable)."""
+    return render_arch_from_template(template_path, spec, width, height, layers=layers)
 
 
 import re as _re
@@ -94,6 +96,10 @@ class SearchConfig:
     height_2d: int = 17
     channel_width: int = 300
     seeds: int = 1
+    # Explicit placement seeds. Empty means 1..seeds. The SAME seeds are used for every trial
+    # and the reference, so comparisons are paired. The old behaviour drew fresh random seeds
+    # per run, which put seed noise (~1.5% CPD on clma) into every trial-vs-reference delta.
+    seed_list: tuple[int, ...] = ()
     arch_type: str = "3d_sb"
     search_mode: str = "layout"
     sampler: str = "tpe"
@@ -110,6 +116,22 @@ class SearchConfig:
     template_2d_path: str = "arch_files/templates/dsp_bram/vtr_2d_arch_dsp_bram.xml"
     # Hard cap per flow invocation; a hung yosys/VPR otherwise pins a worker until wall-time.
     trial_timeout_s: int = 7200
+
+    # Fast path (lazagna_fastflow): synthesize + pack once per benchmark, then run VPR directly
+    # per trial. False falls back to the full LaZagna flow (still VPR-only, no bitstream).
+    fast_flow: bool = True
+    # "place" = placement estimates (cheap search objective), "route" = post-route metrics.
+    fidelity: str = "route"
+    # Shared cache for the one-time BLIF/.net; put it on storage all workers can see.
+    prep_dir: str = ""
+    # Timeout for the one-time synthesis + pack (large Koios designs synthesize for an hour+).
+    prep_timeout_s: int = 6 * 3600
+    # autosize(): the 2D device is the smallest grid where every block type is at most this
+    # utilized; the 3D device matches the 2D device's total tile count over two layers.
+    target_util: float = 0.8
+    # Parallel VPR runs per evaluation (one per seed by default). Lower it for large
+    # devices, where each VPR holds a multi-GB routing graph.
+    vpr_jobs: Optional[int] = None
 
     hb_period_choices: tuple[int, ...] = (4, 6, 8, 12)
     edge_fraction_range: tuple[float, float] = (0.1, 0.35)
@@ -141,10 +163,14 @@ def sample_layout(trial: optuna.Trial, cfg: SearchConfig) -> LayoutSpec:
     return LayoutSpec(family=family, edge_fraction=frac, asymmetry=asymmetry, separate_dsp_bram=separate)
 
 
-def column_counts(cfg: SearchConfig) -> tuple[int, int, int]:
-    """Exact per-layer column counts (CLB, DSP, BRAM) from cfg.block_ratios.
-    BRAM and DSP are rounded, CLB absorbs the remainder so the total always matches."""
-    n = cfg.width - 2
+def seed_values(cfg: SearchConfig) -> tuple[int, ...]:
+    return tuple(cfg.seed_list) if cfg.seed_list else tuple(range(1, cfg.seeds + 1))
+
+
+def column_counts(cfg: SearchConfig, n: Optional[int] = None) -> tuple[int, int, int]:
+    """Exact per-layer column counts (CLB, DSP, BRAM) from cfg.block_ratios for n interior
+    columns (default: the 3D device). BRAM and DSP are rounded, CLB absorbs the remainder."""
+    n = cfg.width - 2 if n is None else n
     _, dsp_f, bram_f = cfg.block_ratios
     n_dsp = int(round(dsp_f * n))
     n_bram = int(round(bram_f * n))
@@ -185,6 +211,73 @@ def sample_columns(trial: optuna.Trial, cfg: SearchConfig) -> ColumnLayoutSpec:
     return ColumnLayoutSpec(columns=cols)
 
 
+def structured_columns(n: int, n_dsp: int, n_bram: int, dsp_l0: int, bram_l0: int,
+                       cluster: float, stagger: float, band_pos: float) -> ColumnLayoutSpec:
+    """Interpretable two-layer hard-block arrangement with fixed totals.
+
+    n_dsp/n_bram: columns PER LAYER in the reference, so the device holds 2*n_dsp DSP and
+    2*n_bram BRAM columns in total. dsp_l0/bram_l0: how many of those go on layer 0 (the rest
+    on layer 1). cluster: 0 = evenly spread over the layer, 1 = one contiguous band.
+    band_pos: band center as a fraction of the width (used as cluster -> 1). stagger: shift
+    of layer 1 positions relative to layer 0, as a fraction of the layer-0 pitch."""
+    def positions(k, shift_frac):
+        if k == 0:
+            return []
+        even = [(i + 0.5) * n / k for i in range(k)]
+        center = band_pos * n
+        band = [center + (i - (k - 1) / 2.0) for i in range(k)]
+        pitch = n / k
+        out = []
+        for e, b in zip(even, band):
+            x = (1 - cluster) * e + cluster * b + shift_frac * pitch * (1 - cluster)
+            out.append(x)
+        return out
+
+    def place(k_dsp, k_bram, shift_frac):
+        cols = [CLB] * n
+        k = k_dsp + k_bram
+        if k == 0:
+            return cols
+        # Interleave types in proportion along the hard-block sequence.
+        types, d, b = [], 0, 0
+        for i in range(k):
+            if k_dsp and (d + 1) / k_dsp <= (b + 1) / max(1, k_bram) or not k_bram:
+                types.append(DSP); d += 1
+            else:
+                types.append(BRAM); b += 1
+        taken = set()
+        for x, t in zip(positions(k, shift_frac), types):
+            c = int(round(x - 0.5)) % n
+            # nearest free column (keeps exact counts when positions collide)
+            for off in range(n):
+                for cand in (c + off, c - off):
+                    cand %= n
+                    if cand not in taken:
+                        taken.add(cand)
+                        cols[cand] = t
+                        break
+                else:
+                    continue
+                break
+        return cols
+
+    l0 = place(dsp_l0, bram_l0, 0.0)
+    l1 = place(2 * n_dsp - dsp_l0, 2 * n_bram - bram_l0, stagger)
+    return ColumnLayoutSpec(columns=[l0, l1])
+
+
+def sample_structured(trial: optuna.Trial, cfg: SearchConfig) -> ColumnLayoutSpec:
+    """Five interpretable layout parameters (see structured_columns)."""
+    n = cfg.width - 2
+    _, nd, nb = column_counts(cfg)
+    dsp_l0 = trial.suggest_int("dsp_on_l0", 0, 2 * nd)
+    bram_l0 = trial.suggest_int("bram_on_l0", 0, 2 * nb)
+    cluster = trial.suggest_float("cluster", 0.0, 1.0)
+    stagger = trial.suggest_float("stagger", 0.0, 1.0)
+    band_pos = trial.suggest_float("band_pos", 0.15, 0.85)
+    return structured_columns(n, nd, nb, dsp_l0, bram_l0, cluster, stagger, band_pos)
+
+
 def sample_connectivity(trial: optuna.Trial, cfg: SearchConfig):
     type_sb = trial.suggest_categorical("type_sb", list(cfg.type_sb_choices))
     if type_sb in ("2d", "3d_cb", "3d_cb_out_only"):
@@ -197,17 +290,10 @@ def sample_connectivity(trial: optuna.Trial, cfg: SearchConfig):
     delay_ratio = trial.suggest_float("delay_ratio", *cfg.delay_ratio_range)
     return type_sb, connectivity, connection_type, delay_ratio
 
-def _run_one(cfg: SearchConfig, spec_or_none, exp_name: str, arch_type: str,
-             connectivity: float, delay_ratio: float, connection_type: str = "subset"):
-    is_2d = arch_type == "2d"
-    tpl = cfg.template_2d_path if is_2d else cfg.template_path
-    template = os.path.join(cfg.lazagna_root, tpl)\
-        if not os.path.isabs(tpl) else tpl
-    spec = spec_or_none if spec_or_none is not None else NAMED_LAYOUTS["aligned"]
-    arch_w = cfg.width_2d if is_2d else cfg.width
-    arch_h = cfg.height_2d if is_2d else cfg.height
-    arch = build_architecture(spec, arch_w, arch_h, template)
-
+def _experiment_options(cfg: SearchConfig, exp_name: str, arch_type: str, connectivity: float,
+                        delay_ratio: float, connection_type: str = "subset",
+                        vertical_connectivity: float = 1,
+                        sb_location: str = "repeated_interval") -> ExperimentOptions:
     opts = ExperimentOptions(
         experiment_name=exp_name,
         grid=GridOptions(width_3d=cfg.width, height_3d=cfg.height,
@@ -215,12 +301,144 @@ def _run_one(cfg: SearchConfig, spec_or_none, exp_name: str, arch_type: str,
                          channel_width=cfg.channel_width),
         benchmarks=BenchmarkOptions(directory=cfg.benchmark_dir, is_verilog=cfg.is_verilog),
         placement=PlacementOptions(algorithm=["cube_bb"]),
-        seeds=SeedOptions(mode="fixed" if cfg.seeds == 1 else "random", value=cfg.seeds),
+        seeds=SeedOptions.from_list(seed_values(cfg)),
         switch_block_3d=SwitchBlock3DOptions(connectivity=[connectivity],
-                                             connection_type=[connection_type]),
-        interlayer_delay=InterlayerDelayOptions(delay_ratio=[delay_ratio]),
+                                             connection_type=[connection_type],
+                                             location_pattern=[sb_location]),
+        interlayer_delay=InterlayerDelayOptions(delay_ratio=[delay_ratio],
+                                                vertical_connectivity=vertical_connectivity),
+        advanced=AdvancedOptions(vpr_only=True),
     )
     opts.architectures[0].type = arch_type
+    return opts
+
+
+def _template(cfg: SearchConfig, is_2d: bool) -> str:
+    tpl = cfg.template_2d_path if is_2d else cfg.template_path
+    return tpl if os.path.isabs(tpl) else os.path.join(cfg.lazagna_root, tpl)
+
+
+def prepare(cfg: SearchConfig) -> dict:
+    """One-time synthesis + pack for cfg's benchmark: {"blif", "net", "demand", ...}.
+    Every worker calls this; only the first does the work (lazagna_fastflow handles locking)."""
+    from lazagna_fastflow import prepare_benchmark, block_signature
+    tpl2d, tpl3d = open(_template(cfg, True)).read(), open(_template(cfg, False)).read()
+    if block_signature(tpl2d) != block_signature(tpl3d):
+        raise ValueError("2D and 3D templates define different blocks; one packing cannot serve both")
+    opts = _experiment_options(cfg, "prep", "2d", 1.0, 0.739)
+    prep_dir = cfg.prep_dir or os.path.join(cfg.lazagna_root, "prep_cache")
+    return prepare_benchmark(tpl2d, opts, prep_dir, cfg.lazagna_root, timeout_s=cfg.prep_timeout_s)
+
+
+def _capacity(cfg: SearchConfig, n: int, h: int, heights: dict, layers: int = 1) -> dict:
+    """Blocks of each type on a device with n interior columns x h interior rows per layer."""
+    n_clb, n_dsp, n_bram = column_counts(cfg, n)
+    return {"clb": layers * n_clb * h,
+            "complex_dsp": layers * n_dsp * (h // heights.get("complex_dsp", 1)),
+            "spram": layers * n_bram * (h // heights.get("spram", 1)),
+            "io": layers * 2 * (n + h) * 8}      # io capacity 8 per perimeter tile
+
+
+def size_devices(cfg: SearchConfig, demand: dict, target_util: Optional[float] = None) -> dict:
+    """2D sets the size. The 2D device is the smallest near-square grid (aspect 0.8-1.25)
+    where every block type is at most target_util utilized. The 3D device then has two
+    layers whose total tile count is as close as possible to the 2D device's, among grids
+    that also fit the design. Interior heights are multiples of the hard-block heights' LCM,
+    so tall DSP/BRAM columns tile exactly with no leftover rows."""
+    import math as _m
+    u = target_util or cfg.target_util
+    heights = tile_heights(open(_template(cfg, True)).read())
+    q = _m.lcm(heights.get("complex_dsp", 1), heights.get("spram", 1))
+    need = {t: demand.get(t, 0) / u for t in ("clb", "complex_dsp", "spram")}
+    need["io"] = demand.get("io", 0)
+
+    def fits(cap):
+        return all(cap[t] >= need[t] for t in need)
+
+    def candidates(layers):
+        for h in range(q, 2000, q):
+            for n in range(max(4, int(0.8 * h)), int(1.25 * h) + 2):
+                yield n, h, _capacity(cfg, n, h, heights, layers)
+
+    best2d = None
+    for n, h, cap in candidates(1):
+        if fits(cap) and (best2d is None or n * h < best2d[0] * best2d[1]):
+            best2d = (n, h, cap)
+        if best2d and h > 1.6 * best2d[1]:
+            break
+    if best2d is None:
+        raise ValueError(f"no 2D device fits demand {demand}")
+    n2, h2, cap2 = best2d
+    target = n2 * h2
+
+    best3d = None
+    for n, h, cap in candidates(2):
+        if 2 * n * h > 1.5 * target:
+            if h * h > target:
+                break
+            continue
+        if fits(cap):
+            key = (abs(2 * n * h - target), abs(n - h))
+            if best3d is None or key < best3d[0]:
+                best3d = (key, n, h, cap)
+    if best3d is None:
+        # Tiny or IO-bound designs: the row quantum (LCM of block heights) makes every
+        # 3D grid much larger than the 2D one. Take the smallest 3D grid that fits.
+        for n, h, cap in candidates(2):
+            if fits(cap) and (best3d is None or n * h < best3d[1] * best3d[2]):
+                best3d = ((abs(2 * n * h - target), abs(n - h)), n, h, cap)
+            if best3d and h > 1.6 * best3d[2]:
+                break
+    if best3d is None:
+        raise ValueError(f"no 3D device fits demand {demand}")
+    _, n3, h3, cap3 = best3d
+    return {"width_2d": n2 + 2, "height_2d": h2 + 2, "width": n3 + 2, "height": h3 + 2,
+            "tiles_2d": n2 * h2, "tiles_3d": 2 * n3 * h3, "cap_2d": cap2, "cap_3d": cap3,
+            "demand": demand, "target_util": u}
+
+
+def autosize(cfg: SearchConfig) -> tuple[SearchConfig, dict]:
+    """Prepare cfg's benchmark and return (cfg sized to its measured block demand, sizing info)."""
+    import dataclasses
+    meta = prepare(cfg)
+    info = size_devices(cfg, meta["demand"])
+    sized = dataclasses.replace(cfg, width=info["width"], height=info["height"],
+                                width_2d=info["width_2d"], height_2d=info["height_2d"])
+    return sized, info
+
+
+def _run_one(cfg: SearchConfig, spec_or_none, exp_name: str, arch_type: str,
+             connectivity: float, delay_ratio: float, connection_type: str = "subset",
+             info: Optional[dict] = None, fidelity: Optional[str] = None,
+             vertical_connectivity: float = 1, sb_location: str = "repeated_interval"):
+    """Run one architecture over all seeds. Returns ((cpd, wl), None) or (None, error).
+    `info`, if given, is filled with per-seed details (placement estimates and routed values)."""
+    is_2d = arch_type == "2d"
+    if spec_or_none is None:
+        # Default: the resource-matched evenly spread reference, sized for this device.
+        spec_or_none = reference_columns(cfg, (cfg.width_2d if is_2d else cfg.width) - 2)
+    spec = spec_or_none
+    arch_w = cfg.width_2d if is_2d else cfg.width
+    arch_h = cfg.height_2d if is_2d else cfg.height
+    arch = build_architecture(spec, arch_w, arch_h, _template(cfg, is_2d), layers=1 if is_2d else 2)
+    opts = _experiment_options(cfg, exp_name, arch_type, connectivity, delay_ratio, connection_type,
+                               vertical_connectivity, sb_location)
+
+    if cfg.fast_flow:
+        from lazagna_fastflow import evaluate
+        try:
+            meta = prepare(cfg)
+            res = evaluate(arch, opts, meta["blif"], meta["net"], seed_values(cfg),
+                           stage=fidelity or cfg.fidelity,
+                           lazagna_root=cfg.lazagna_root, timeout_s=cfg.trial_timeout_s,
+                           jobs=cfg.vpr_jobs)
+        except Exception as e:   # setup/prepare failures become a pruned trial, not a dead worker
+            return None, f"{type(e).__name__}: {e}"
+        if info is not None:
+            info.update(res)
+        if not res["ok"]:
+            return None, res["error"]
+        return (res["cpd"], res["wl"]), None
 
     result = run_lazagna(arch, opts, lazagna_root=cfg.lazagna_root,
                          timeout_s=cfg.trial_timeout_s)
@@ -230,11 +448,12 @@ def _run_one(cfg: SearchConfig, spec_or_none, exp_name: str, arch_type: str,
     metrics = parse_results(os.path.join(cfg.lazagna_root, "results"), only_containing=exp_name)
     return metrics, None
 
-def reference_columns(cfg: SearchConfig) -> ColumnLayoutSpec:
+def reference_columns(cfg: SearchConfig, n: Optional[int] = None) -> ColumnLayoutSpec:
     """Reference layout with the SAME block counts as every sampled trial (evenly spread),
-    so the reference is resource-matched to the search and the comparison is placement-only."""
-    n = cfg.width - 2
-    _, n_dsp, n_bram = column_counts(cfg)
+    so the reference is resource-matched to the search and the comparison is placement-only.
+    n = interior columns (default: the 3D device; pass width_2d - 2 for the 2D baseline)."""
+    n = cfg.width - 2 if n is None else n
+    _, n_dsp, n_bram = column_counts(cfg, n)
     pattern = [CLB] * n
     if n_bram:
         step = n / n_bram
@@ -249,15 +468,16 @@ def reference_columns(cfg: SearchConfig) -> ColumnLayoutSpec:
 
 
 def baseline_signature(cfg: SearchConfig) -> str:
-    """Identifies a reference run. Excludes , so the TPE / NSGA-II / random studies
+    """Identifies a reference run. Excludes the sampler, so the TPE / NSGA-II / random studies
     SHARE one reference instead of each computing its own. In the 2026-08-14 campaign they each
     ran a separate reference (9.822 / 9.874 / 9.977 ns), which made the per-study "% vs
     reference" numbers non-comparable across samplers."""
     import hashlib
     key = "|".join(str(x) for x in (
         os.path.basename(cfg.benchmark_dir.rstrip("/")), cfg.is_verilog,
-        cfg.width, cfg.height, cfg.channel_width, cfg.arch_type, cfg.seeds,
+        cfg.width, cfg.height, cfg.channel_width, cfg.arch_type, seed_values(cfg),
         cfg.search_mode, cfg.block_ratios, cfg.fixed_block_counts, cfg.template_path,
+        cfg.fast_flow, cfg.fidelity,
     ))
     return hashlib.sha1(key.encode()).hexdigest()[:12]
 
@@ -366,8 +586,8 @@ def make_objective(cfg: SearchConfig, block_types=None, study: Optional[optuna.S
         if cfg.search_mode == "connectivity":
             spec = NAMED_LAYOUTS["aligned"]
             arch_type, connectivity, connection_type, delay_ratio = sample_connectivity(trial, cfg)
-        elif cfg.search_mode == "columns":
-            spec = sample_columns(trial, cfg)
+        elif cfg.search_mode in ("columns", "structured"):
+            spec = sample_columns(trial, cfg) if cfg.search_mode == "columns" else sample_structured(trial, cfg)
             arch_type = cfg.arch_type
             connectivity = trial.suggest_categorical("connectivity", list(cfg.connectivity_choices))
             connection_type = "subset"
