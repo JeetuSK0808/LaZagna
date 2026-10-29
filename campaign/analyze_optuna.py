@@ -1,6 +1,8 @@
 # Summarize the structured Optuna studies (run INSIDE the container: optuna is not on the host).
 #   sbatch -A gts-<PI> --export=ALL,WORK_ROOT=<study_optuna dir>,SCRIPT=/campaign/analyze_optuna.py run_script.sbatch
 # Writes /work/optuna_summary.json and /work/optuna_summary.md, plus /work/tasks_validate.jsonl:
+# (with scikit-learn + shap installed, each study also gets a SHAP importance table; see
+# lazagna_shap.py. Without them that table is skipped and everything else is unchanged.)
 # 5-seed "custom" validation tasks for the top-K layouts of each study (structured params),
 # to be run with experiment.sbatch in the main study dir.
 import glob
@@ -16,6 +18,14 @@ TOPK = int(os.environ.get("TOPK", "3"))
 sys.path[:0] = [CODE, ROOT]
 import optuna
 from lazagna_optuna import journal_storage
+
+try:
+    import lazagna_shap
+    lazagna_shap._require()
+    HAVE_SHAP = True
+except ImportError as _e:
+    HAVE_SHAP = False
+    print(f"note: SHAP tables skipped ({_e})")
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 PARAMS = ["dsp_on_l0", "bram_on_l0", "cluster", "stagger", "band_pos"]
@@ -74,6 +84,19 @@ for log in sorted(glob.glob(os.path.join(WORK, "journal", "*.log"))):
     md += [f"## {design} ({len(done)} trials)", "",
            "| parameter | Spearman vs CPD gain | Spearman vs WL gain |", "|---|---|---|"]
     md += [f"| {p} | {c['cpd']:+.2f} | {c['wl']:+.2f} |" for p, c in corr.items()]
+    if HAVE_SHAP:
+        try:
+            shap_res = lazagna_shap.explain_study(st, targets=("cpd_impr_pct", "wl_impr_pct"), params=PARAMS)
+            summary[name]["shap"] = [{k: v for k, v in r.items() if k != "per_sample"} for r in shap_res]
+            by = [{e["param"]: e for e in r["importance"]} for r in shap_res]
+            md += ["", f"SHAP importance (tree surrogate; mean |SHAP| in % points of gain; surrogate CV R² "
+                       f"CPD {shap_res[0]['cv_r2']:.2f}, WL {shap_res[1]['cv_r2']:.2f}):", "",
+                   "| parameter | CPD mean \\|SHAP\\| | CPD direction | WL mean \\|SHAP\\| | WL direction |",
+                   "|---|---|---|---|---|"]
+            md += [f"| {p} | {by[0][p]['mean_abs_shap']:.2f} | {lazagna_shap._fmt_dir(by[0][p])} | "
+                   f"{by[1][p]['mean_abs_shap']:.2f} | {lazagna_shap._fmt_dir(by[1][p])} |" for p in PARAMS]
+        except Exception as e:   # too few trials etc.: keep the rest of the summary
+            md += ["", f"SHAP importance skipped: {type(e).__name__}: {e}"]
     md += ["", "Top trials (sum of CPD + WL gain vs aligned reference, 3 seeds):", "",
            "| trial | dsp_on_l0 | bram_on_l0 | cluster | stagger | band_pos | CPD % | WL % |",
            "|---|---|---|---|---|---|---|---|"]

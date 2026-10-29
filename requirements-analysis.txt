@@ -1,0 +1,6 @@
+# Optional: only for lazagna_shap.py (SHAP importance of search parameters) and the SHAP table
+# in campaign/analyze_optuna.py. The flow and the optimizer do not need these.
+# Tested with scikit-learn 1.9.1, shap 0.54.1, matplotlib 3.11 (Python 3.12).
+scikit-learn
+shap
+matplotlib      # optional: bar charts (lazagna_shap.py --no-plot skips them)
