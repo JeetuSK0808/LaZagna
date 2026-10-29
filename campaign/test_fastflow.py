@@ -26,14 +26,12 @@ DESIGN = os.environ.get("TEST_DESIGN", "koios/eltwise_layer")
 SEEDS = int(os.environ.get("SEEDS", "3"))
 TALL = os.environ.get("TALL", "1") != "0"
 CW = int(os.environ.get("CW", "300"))
-SUITES = {"koios": "benchmarks/koios", "vtr": "benchmarks/VTR_benchmarks"}
+from benchmark_suites import stage_design, is_verilog_entry
 
 suite, name = DESIGN.split("/", 1)
-bdir = os.path.join(WORK, "bench", "test_" + name)
-os.makedirs(bdir, exist_ok=True)
-shutil.copy(os.path.join(ROOT, SUITES[suite], name + ".v"), os.path.join(bdir, name + ".v"))
+bdir = stage_design(DESIGN, ROOT, WORK, prefix="test_", refresh=True)
 tdir = "dsp_bram_tall" if TALL else "dsp_bram"
-base = SearchConfig(lazagna_root=ROOT, benchmark_dir=bdir, is_verilog=True,
+base = SearchConfig(lazagna_root=ROOT, benchmark_dir=bdir, is_verilog=is_verilog_entry(DESIGN),
                     channel_width=CW, seeds=SEEDS, seed_list=tuple(range(1, SEEDS + 1)),
                     arch_type="combined", search_mode="columns", prep_dir="/prep",
                     template_path=f"arch_files/templates/{tdir}/vtr_arch_dsp_bram.xml",

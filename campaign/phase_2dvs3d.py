@@ -7,8 +7,8 @@
 #
 # History: the old version wrote a two-layer layout into the single-die 2D template, so
 # the "2D baseline" was two dies with no vertical routing; it never routed at any cw.
-# argv: [seeds=3]   env: DESIGNS_2DVS3D ("koios/eltwise_layer"), CW (300), TALL (1),
-#                        TARGET_UTIL (0.8)
+# argv: [seeds=3]   env: DESIGNS_2DVS3D ("koios/eltwise_layer"; any "<suite>/<name>" in
+#                        benchmark_suites.SUITES), CW (300), TALL (1), TARGET_UTIL (0.8)
 import os
 import re
 import shutil
@@ -21,24 +21,20 @@ os.chdir(ROOT)
 sys.path[:0] = [CODE, ROOT]
 
 from lazagna_optuna import SearchConfig, autosize, reference_columns, _run_one
+from benchmark_suites import stage_design, is_verilog_entry
 
 SEEDS = int(sys.argv[1]) if len(sys.argv) > 1 else 3
 CW = int(os.environ.get("CW", "300"))
 TALL = os.environ.get("TALL", "1") != "0"
 TARGET_UTIL = float(os.environ.get("TARGET_UTIL", "0.8"))
 DESIGNS = [d for d in re.split(r"[,\s]+", os.environ.get("DESIGNS_2DVS3D", "koios/eltwise_layer")) if d]
-SUITES = {"koios": "benchmarks/koios", "vtr": "benchmarks/VTR_benchmarks"}
 
 
 def run_design(entry: str) -> bool:
     suite, name = entry.split("/", 1)
-    bdir = os.path.join(WORK, "bench", "e2d3d_" + name)
-    os.makedirs(bdir, exist_ok=True)
-    dst = os.path.join(bdir, name + ".v")
-    if not os.path.exists(dst):
-        shutil.copy(os.path.join(ROOT, SUITES[suite], name + ".v"), dst)
+    bdir = stage_design(entry, ROOT, WORK, prefix="e2d3d_")
     tdir = "dsp_bram_tall" if TALL else "dsp_bram"
-    base = SearchConfig(lazagna_root=ROOT, benchmark_dir=bdir, is_verilog=True,
+    base = SearchConfig(lazagna_root=ROOT, benchmark_dir=bdir, is_verilog=is_verilog_entry(entry),
                         channel_width=CW, seeds=SEEDS, seed_list=tuple(range(1, SEEDS + 1)),
                         arch_type="combined", search_mode="columns", prep_dir="/prep",
                         target_util=TARGET_UTIL, fidelity="route", run_tag="e2d3d",

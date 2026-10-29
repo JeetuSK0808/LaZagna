@@ -46,6 +46,10 @@ architectures:
 
 
 # --- Benchmark Configuration ---
+# Instead of directory/is_verilog you can name a suite (see benchmark_suites.py):
+#   benchmarks: {suite: vtr}                       every design of the suite
+#   benchmarks: {suite: mcnc, designs: [clma]}     only some of them
+# or give a LIST of such entries to sweep several suites in one experiment.
 benchmarks:
   directory: "{lazagna_root}/benchmarks/and2_or2"
   is_verilog: false     # true = Verilog (.v), false = BLIF (.blif)

@@ -1,0 +1,23 @@
+# ============================================================
+# LaZagna Setup — Multi-Suite Test
+# ============================================================
+# Runs designs from more than one benchmark suite in one experiment.
+# Each benchmarks entry is swept like an architecture entry; with
+# several entries the suite name is added to the run identifier, so
+# the same design name in two suites never overwrites the other.
+# List the available suites with:  python3 benchmark_suites.py
+# ============================================================
+
+experiment_name: "multi_suite_test"
+
+grid:
+  width_3d: 100
+  height_3d: 100
+  width_2d: 144
+  height_2d: 144
+  channel_width: 300
+
+benchmarks:
+  - suite: and2_or2                   # tiny BLIF design (MCNC style)
+  - suite: itd_quick                  # Verilog (Koios), two of its designs only
+    designs: [eltwise_layer, softmax]

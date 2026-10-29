@@ -12,7 +12,8 @@ New YAML schema
   experiment_name     (required)
   grid:               width_3d, height_3d, width_2d, height_2d, channel_width
   architectures:      list of {type, arch_file?}
-  benchmarks:         directory, is_verilog
+  benchmarks:         directory, is_verilog   (or suite: <name>, designs: [...];
+                      or a LIST of such entries, swept like architectures)
   placement:          algorithm
   seeds:              mode, value
   switch_block_3d:    connectivity, connection_type, switch_name, segment_name,
@@ -35,7 +36,7 @@ import yaml
 import copy
 import os
 import sys
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -105,6 +106,91 @@ def load_defaults() -> Dict:
         return yaml.safe_load(f)
 
 
+_BENCHMARK_ENTRY_KEYS = {"suite", "directory", "is_verilog", "designs"}
+
+
+def _benchmark_suites():
+    """benchmark_suites.py lives in the LaZagna root, next to lazagna/."""
+    if LAZAGNA_ROOT not in sys.path:
+        sys.path.append(LAZAGNA_ROOT)
+    import benchmark_suites
+    return benchmark_suites
+
+
+def build_benchmark_mapping(user_benchmarks) -> Optional[List[Dict]]:
+    """Linked 'benchmark_mapping' entries for the extended `benchmarks:` forms, or None for
+    the plain {directory, is_verilog} form (which keeps its original code path untouched).
+
+    Extended forms:
+      benchmarks: {suite: vtr}                       one registered suite
+      benchmarks: {suite: koios, designs: [a, b]}    only some of its designs
+      benchmarks:                                    several suites/directories, each one
+        - suite: vtr                                 swept like `architectures`
+        - suite: mcnc
+          designs: [clma, s38417]
+        - directory: "{lazagna_root}/benchmarks/ITD_quick"
+          is_verilog: true
+    With more than one entry, the entry's label (suite name, or the directory's name) is
+    added to the run identifier so the same design name in two suites never collides."""
+    if isinstance(user_benchmarks, list):
+        entries = user_benchmarks
+        if not entries:
+            raise ValueError("'benchmarks' is an empty list; give at least one entry.")
+    elif isinstance(user_benchmarks, dict) and ({"suite", "designs"} & set(user_benchmarks)):
+        entries = [user_benchmarks]
+    else:
+        return None
+
+    bs = _benchmark_suites()
+    mapping: List[Dict] = []
+    labels: List[str] = []
+    for i, e in enumerate(entries):
+        if not isinstance(e, dict):
+            raise ValueError(f"benchmarks entry {i + 1} must be a mapping like "
+                             f"{{suite: vtr}} or {{directory: ..., is_verilog: ...}}, got {e!r}")
+        unknown = set(e) - _BENCHMARK_ENTRY_KEYS
+        if unknown:
+            raise ValueError(f"benchmarks entry {i + 1}: unknown key(s) {sorted(unknown)}; "
+                             f"allowed: {sorted(_BENCHMARK_ENTRY_KEYS)}")
+        if "suite" in e:
+            s = bs.get_suite(e["suite"])
+            directory = s.path(LAZAGNA_ROOT)
+            if "directory" in e and os.path.normpath(
+                    e["directory"].replace("{lazagna_root}", LAZAGNA_ROOT)) != os.path.normpath(directory):
+                raise ValueError(f"benchmarks entry {i + 1}: suite '{s.name}' lives in {s.directory}, "
+                                 f"but directory is {e['directory']}; give one or the other.")
+            if "is_verilog" in e and bool(e["is_verilog"]) != s.is_verilog:
+                raise ValueError(f"benchmarks entry {i + 1}: suite '{s.name}' is "
+                                 f"{'Verilog' if s.is_verilog else 'BLIF'}, but is_verilog is {e['is_verilog']}.")
+            is_verilog, label = s.is_verilog, s.name
+        elif "directory" in e:
+            directory = e["directory"].replace("{lazagna_root}", LAZAGNA_ROOT)
+            is_verilog = bool(e.get("is_verilog", False))
+            known = bs.suite_for_directory(directory, LAZAGNA_ROOT)
+            label = known.name if known else os.path.basename(os.path.normpath(directory))
+        else:
+            raise ValueError(f"benchmarks entry {i + 1} needs 'suite' or 'directory'.")
+        designs = e.get("designs") or []
+        if isinstance(designs, str):
+            designs = [designs]
+        if not isinstance(designs, list) or not all(isinstance(d, str) for d in designs):
+            raise ValueError(f"benchmarks entry {i + 1}: 'designs' must be a list of design names.")
+        while label in labels:              # two entries resolving to the same name
+            label += str(i + 1)
+        labels.append(label)
+        mapping.append({
+            "benchmarks_dir": directory,
+            "is_verilog_benchmarks": is_verilog,
+            "benchmark_suite": label,
+            "benchmark_designs": list(designs),
+            "benchmark_tag": "",
+        })
+    if len(mapping) > 1:
+        for m in mapping:
+            m["benchmark_tag"] = "_" + m["benchmark_suite"]
+    return mapping
+
+
 # ===================================================================
 # Core loader — new format → flat internal dict
 # ===================================================================
@@ -149,9 +235,13 @@ def load_param_ranges_v2(yaml_file: str) -> Dict:
     params["place_algorithm"] = placement["algorithm"]
 
     # -- Benchmarks --
-    benchmarks = config.get("benchmarks", {})
-    params["benchmarks_dir"]        = benchmarks["directory"]
-    params["is_verilog_benchmarks"] = benchmarks["is_verilog"]
+    # Plain {directory, is_verilog}: unchanged. Suites / design filters / several entries
+    # become the linked group 'benchmark_mapping' (added below with the other linked groups).
+    benchmark_mapping = build_benchmark_mapping((user_config or {}).get("benchmarks"))
+    if benchmark_mapping is None:
+        benchmarks = config.get("benchmarks", {})
+        params["benchmarks_dir"]        = benchmarks["directory"]
+        params["is_verilog_benchmarks"] = benchmarks["is_verilog"]
 
     # -- Switch Block 3D (independent params) --
     sb = config.get("switch_block_3d", {})
@@ -191,6 +281,10 @@ def load_param_ranges_v2(yaml_file: str) -> Dict:
             {"type_sb": arch_type, "arch_file": arch_file}
         )
     params["linked_params"]["type_sb_arch_mapping"] = type_sb_arch_mapping
+
+    # ---- Benchmarks (only for the extended forms; see build_benchmark_mapping) ----
+    if benchmark_mapping is not None:
+        params["linked_params"]["benchmark_mapping"] = benchmark_mapping
 
     # ---- Seed mapping ----
     seeds = config.get("seeds", {})
@@ -323,9 +417,11 @@ def get_run_params_from_yaml_v2(
         del combo["width_2d"]
         del combo["height_2d"]
 
-        # Append delay ratio to experiment identifier
+        # Append delay ratio to experiment identifier (after the benchmark entry's label,
+        # which is only non-empty when several benchmark entries are swept)
         combo["cur_loop_identifier"] = (
             combo["cur_loop_identifier"]
+            + combo.pop("benchmark_tag", "")
             + "_vp_"
             + str(combo["vertical_delay_ratio"])
         )

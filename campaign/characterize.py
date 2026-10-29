@@ -12,7 +12,8 @@
 # use, so the synthesis paid for here is never paid again by a study.
 #
 # One design per SLURM array task (CHAR_INDEX), then `--summarize` prints the table.
-# env: CHAR_DESIGNS  space/comma separated "suite/name" (suite = koios | vtr), default below
+# env: CHAR_DESIGNS  space/comma separated "suite/name" (any suite in benchmark_suites.SUITES,
+#                    e.g. koios, vtr, mcnc), default below
 #      CHAR_INDEX    which design this task handles (set from SLURM_ARRAY_TASK_ID)
 #      TALL          1 (default) = 4-tall DSP / 6-tall BRAM templates, 0 = 1x1 templates
 #      TARGET_UTIL   utilization of the binding resource on the 2D device (default 0.8)
@@ -30,8 +31,8 @@ os.chdir(ROOT)
 sys.path[:0] = [CODE, ROOT]
 
 from lazagna_optuna import SearchConfig, prepare, size_devices, column_counts
+from benchmark_suites import stage_design, is_verilog_entry
 
-SUITES = {"koios": "benchmarks/koios", "vtr": "benchmarks/VTR_benchmarks"}
 DEFAULT_DESIGNS = [
     # Koios (deep-learning, DSP/BRAM-heavy). Smaller variants first: these are the ones
     # that can afford many routed trials.
@@ -53,9 +54,9 @@ TALL = os.environ.get("TALL", "1") != "0"
 OUT = os.path.join(WORK, "char")
 
 
-def base_cfg(bdir: str) -> SearchConfig:
+def base_cfg(bdir: str, is_verilog: bool = True) -> SearchConfig:
     tdir = "dsp_bram_tall" if TALL else "dsp_bram"
-    cfg = SearchConfig(lazagna_root=ROOT, benchmark_dir=bdir, is_verilog=True,
+    cfg = SearchConfig(lazagna_root=ROOT, benchmark_dir=bdir, is_verilog=is_verilog,
                        arch_type="combined", search_mode="columns", prep_dir="/prep",
                        template_path=f"arch_files/templates/{tdir}/vtr_arch_dsp_bram.xml",
                        template_2d_path=f"arch_files/templates/{tdir}/vtr_2d_arch_dsp_bram.xml")
@@ -65,18 +66,11 @@ def base_cfg(bdir: str) -> SearchConfig:
 
 
 def bench_dir(entry: str):
-    """Single-design dir on the writable host work dir, so prepare() sees exactly one .v."""
-    suite, name = entry.split("/", 1)
-    src = os.path.join(ROOT, SUITES[suite], name + ".v")
-    if not os.path.exists(src):
+    """Single-design dir on the writable host work dir, so prepare() sees exactly one design."""
+    try:
+        return stage_design(entry, ROOT, WORK, prefix="char_")
+    except FileNotFoundError:
         return None
-    d = os.path.join(WORK, "bench", "char_" + name)
-    dst = os.path.join(d, name + ".v")
-    if not os.path.exists(dst):
-        os.makedirs(d, exist_ok=True)
-        shutil.copy(src, dst + ".tmp")
-        os.replace(dst + ".tmp", dst)
-    return d
 
 
 def characterize(entry: str) -> dict:
@@ -84,8 +78,8 @@ def characterize(entry: str) -> dict:
     rec = {"design": entry, "tall": TALL}
     bdir = bench_dir(entry)
     if bdir is None:
-        return {**rec, "error": "source .v not found"}
-    cfg = base_cfg(bdir)
+        return {**rec, "error": "source not found"}
+    cfg = base_cfg(bdir, is_verilog_entry(entry))
     t0 = time.time()
     try:
         meta = prepare(cfg)
