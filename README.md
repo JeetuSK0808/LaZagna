@@ -253,6 +253,43 @@ benchmarks:
   is_verilog: true
 ```
 
+#### Benchmark suites
+
+Instead of a directory, you can name a suite from the `benchmarks/` submodule (`python3 benchmark_suites.py` lists them with their design counts):
+
+| Suite | Format | Directory |
+|---|---|---|
+| `koios` | Verilog | `benchmarks/koios` (its `*_include.v` helpers are skipped) |
+| `koios_proxy` | Verilog | `benchmarks/koios_proxy` |
+| `vtr` | Verilog | `benchmarks/VTR_benchmarks` |
+| `mcnc` | BLIF + `.act` | `benchmarks/MCNC_benchmarks` (one folder per design) |
+| `itd_paper`, `itd_subset`, `itd_quick` | Verilog | `benchmarks/ITD_paper`, `ITD_subset`, `ITD_quick` |
+| `eltwise`, `dsp_bram_tests` | Verilog | small single-purpose sets |
+| `and2_or2`, `des` | BLIF | single small designs |
+
+With `suite`, `is_verilog` comes from the suite. `designs` runs only some of a suite's (or a directory's) designs, and names a missing design as an error. A **list** of entries is swept like `architectures`: each entry is its own run, and with more than one entry the entry's suite name is added to the run identifier, so the same design name in two suites never overwrites the other.
+
+```yaml
+# Every VTR design:
+benchmarks:
+  suite: vtr
+
+# Two MCNC designs only:
+benchmarks:
+  suite: mcnc
+  designs: [clma, s38417]
+
+# Several suites in one experiment:
+benchmarks:
+  - suite: vtr
+  - suite: mcnc
+    designs: [clma]
+  - directory: "{lazagna_root}/benchmarks/ITD_quick"
+    is_verilog: true
+```
+
+From Python: `BenchmarkOptions.from_suite("vtr")`, `BenchmarkOptions.from_suite("mcnc", ["clma"])`, and `ExperimentOptions(benchmarks=[...])` for several entries.
+
 ---
 
 ### `placement`
@@ -403,6 +440,7 @@ Ready-to-use examples in `setup_files/`:
 | [`verilog_benchmark_test.yaml`](setup_files/verilog_benchmark_test.yaml) | Large Verilog benchmarks | `grid`, `benchmarks` |
 | [`sb_locations_test.yaml`](setup_files/sb_locations_test.yaml) | Custom SB placement from CSV | `switch_block_3d.location_pattern` |
 | [`vertical_delay_test.yaml`](setup_files/vertical_delay_test.yaml) | Delay ratio sweep | `interlayer_delay.delay_ratio: [0.5–5.0]` |
+| [`multi_suite_test.yaml`](setup_files/multi_suite_test.yaml) | Designs from two suites in one experiment | `benchmarks` (list of suites) |
 
 ---
 
@@ -459,7 +497,9 @@ LaZagna/
 LaZagna/
 ├── arch_files/           # Architecture XML files (generated and templates)
 │   └── templates/        # Base architecture templates
-├── benchmarks/           # Benchmark circuits (BLIF and Verilog)
+├── benchmarks/           # Benchmark circuits (BLIF and Verilog), see benchmark_suites.py
+├── benchmark_suites.py   # Registry of the benchmark suites (koios, vtr, mcnc, ...)
+├── lazagna_shap.py       # SHAP importance of search parameters (optional analysis)
 ├── docs/                 # Documentation (Sphinx/ReadTheDocs)
 ├── images/               # Logos and figures
 ├── lazagna/              # Core Python source code
@@ -480,8 +520,25 @@ LaZagna/
 ├── task/                 # OpenFPGA task templates
 ├── tasks_run/            # Output: detailed per-run results
 ├── makefile              # Build targets
-└── requirements.txt      # Python dependencies
+├── requirements.txt      # Python dependencies
+└── requirements-analysis.txt  # Optional: scikit-learn + shap for lazagna_shap.py
 ```
+
+---
+
+## Design-Space Search Across Benchmarks, and SHAP Importance
+
+**Searching for one architecture across many designs.** `lazagna_optuna.SearchConfig` normally searches for one design (`benchmark_dir`). Setting `benchmarks` (e.g. `("koios/eltwise_layer", "vtr/stereovision1", "mcnc/clma")`, or `("vtr",)` for a whole suite) makes every trial evaluate its architecture on each design, each on its own autosized device and against its own reference. The objective becomes the geometric mean of the per-design CPD and wirelength ratios, as % improvement, and the per-design numbers are kept in each trial's `per_design` user attribute. It supports the `layout`, `connectivity` and `structured` search modes. In `structured` mode the layer-0 hard-block shares are sampled as fractions (`dsp_frac_l0`, `bram_frac_l0`), so a trial means the same arrangement on every device size.
+
+**Which parameters matter.** `lazagna_shap.py` explains a finished study. It fits a gradient-boosted tree surrogate from the trial parameters to a target (default `cpd_impr_pct` and `wl_impr_pct`), then reports each parameter's mean |SHAP| value in the target's units, its share, its spread over repeated fits, and its direction. Every table also carries the surrogate's cross-validated R², so a weak fit is visible. It needs `pip install -r requirements-analysis.txt`.
+
+```bash
+python3 lazagna_shap.py --journal campaign_work/journal/<study>.log --study <study> --out shap_out
+python3 lazagna_shap.py --storage sqlite:///lazagna_clma_conn.db --study lazagna_clma_conn
+python3 lazagna_shap.py --csv runs.csv --target cpd_gain --features cluster,stagger
+```
+
+`campaign/analyze_optuna.py` adds the same SHAP table next to its Spearman table when these packages are installed.
 
 ---
 
