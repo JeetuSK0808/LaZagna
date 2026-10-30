@@ -139,3 +139,6 @@ logs/**
 
 # Final study results (per-task JSON, 1.4 MB) are versioned so the write-up stays reproducible.
 !docs/study/results/*.json
+
+# Test fixtures (golden YAML expansion used by tests/test_yaml_benchmarks.py).
+!tests/data/*.json

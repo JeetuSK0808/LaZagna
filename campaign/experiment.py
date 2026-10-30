@@ -12,7 +12,8 @@
 #            "conn"   : 3D reference with a given 3D switch-block connectivity
 #            "custom" : explicit 3D columns (`columns`: [layer0, layer1]) or structured
 #                       params (`structured`: {dsp_on_l0, bram_on_l0, cluster, stagger, band_pos})
-#   design   "koios/<name>" | "vtr/<name>"
+#   design   "<suite>/<name>", e.g. "koios/<name>", "vtr/<name>", "mcnc/<name>"
+#            (any suite in benchmark_suites.SUITES; BLIF suites such as mcnc run as BLIF)
 #   seeds    number of placement seeds (default 5)
 #   layout   (layout) name in LAYOUTS
 #   conn     (conn) fraction of switch blocks that are 3D (percent_connectivity)
@@ -39,8 +40,8 @@ sys.path[:0] = [CODE, ROOT]
 import dataclasses
 from lazagna_optuna import SearchConfig, autosize, reference_columns, column_counts, _run_one
 from layout_space import ColumnLayoutSpec, CLB, DSP, BRAM
+from benchmark_suites import stage_design, is_verilog_entry
 
-SUITES = {"koios": "benchmarks/koios", "vtr": "benchmarks/VTR_benchmarks"}
 TALL = os.environ.get("TALL", "1") != "0"
 CW = int(os.environ.get("CW", "300"))
 
@@ -120,21 +121,15 @@ LAYOUTS = ("aligned", "staggered", "hb_one_layer", "split_types", "center", "edg
 
 
 def stage(entry: str) -> str:
-    suite, name = entry.split("/", 1)
-    d = os.path.join(WORK, "bench", name)
-    dst = os.path.join(d, name + ".v")
-    if not os.path.exists(dst):
-        os.makedirs(d, exist_ok=True)
-        tmp = f"{dst}.{os.getpid()}.{os.environ.get('TASK_INDEX', '')}.tmp"  # unique: tasks race here
-        shutil.copy(os.path.join(ROOT, SUITES[suite], name + ".v"), tmp)
-        os.replace(tmp, dst)
-    return d
+    # unique temp name + atomic replace inside stage_design: tasks race here
+    return stage_design(entry, ROOT, WORK)
 
 
 def run(task: dict) -> dict:
     seeds = int(task.get("seeds", 5))
     tdir = "dsp_bram_tall" if TALL else "dsp_bram"
-    base = SearchConfig(lazagna_root=ROOT, benchmark_dir=stage(task["design"]), is_verilog=True,
+    base = SearchConfig(lazagna_root=ROOT, benchmark_dir=stage(task["design"]),
+                        is_verilog=is_verilog_entry(task["design"]),
                         channel_width=CW, seeds=seeds, seed_list=tuple(range(1, seeds + 1)),
                         arch_type="combined", search_mode="columns", prep_dir="/prep",
                         fidelity="route", run_tag="x", vpr_jobs=task.get("jobs"),

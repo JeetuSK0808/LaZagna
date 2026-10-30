@@ -197,6 +197,43 @@ benchmarks:
 For Verilog benchmarks, LaZagna will run Yosys for synthesis before VPR. Set `is_verilog: true` and point to a directory containing `.v` files.
 :::
 
+#### Benchmark suites
+
+Instead of a directory, you can name a suite from the `benchmarks/` submodule (`python3 benchmark_suites.py` lists them with their design counts):
+
+| Suite | Format | Directory |
+|---|---|---|
+| `koios` | Verilog | `benchmarks/koios` (its `*_include.v` helpers are skipped) |
+| `koios_proxy` | Verilog | `benchmarks/koios_proxy` |
+| `vtr` | Verilog | `benchmarks/VTR_benchmarks` |
+| `mcnc` | BLIF + `.act` | `benchmarks/MCNC_benchmarks` (one folder per design) |
+| `itd_paper`, `itd_subset`, `itd_quick` | Verilog | `benchmarks/ITD_paper`, `ITD_subset`, `ITD_quick` |
+| `eltwise`, `dsp_bram_tests` | Verilog | small single-purpose sets |
+| `and2_or2`, `des` | BLIF | single small designs |
+
+With `suite`, `is_verilog` comes from the suite. `designs` runs only some of a suite's (or a directory's) designs, and names a missing design as an error. A **list** of entries is swept like `architectures`: each entry is its own run, and with more than one entry the entry's suite name is added to the run identifier, so the same design name in two suites never overwrites the other.
+
+```yaml
+# Every VTR design:
+benchmarks:
+  suite: vtr
+
+# Two MCNC designs only:
+benchmarks:
+  suite: mcnc
+  designs: [clma, s38417]
+
+# Several suites in one experiment:
+benchmarks:
+  - suite: vtr
+  - suite: mcnc
+    designs: [clma]
+  - directory: "{lazagna_root}/benchmarks/ITD_quick"
+    is_verilog: true
+```
+
+From Python: `BenchmarkOptions.from_suite("vtr")`, `BenchmarkOptions.from_suite("mcnc", ["clma"])`, and `ExperimentOptions(benchmarks=[...])` for several entries.
+
 ---
 
 ### `placement`

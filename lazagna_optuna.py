@@ -152,6 +152,21 @@ class SearchConfig:
     connection_type_choices: tuple[str, ...] = ("subset",)
     fine_connectivity_choices: tuple[float, ...] = (0.1, 0.2, 0.33, 0.5, 0.66, 0.8, 1.0)
 
+    # Multi-benchmark search (opt-in). "<suite>/<design>" entries, or "<suite>" for every
+    # design of a suite (see benchmark_suites.py). When set, every trial's architecture is
+    # evaluated on each design, each on its own device and against its own reference, and the
+    # objective is the geometric mean of the per-design CPD / WL ratios, as % improvement, so
+    # the search looks for one architecture that is good across the set rather than for one
+    # design. benchmark_dir / is_verilog are then ignored. Search modes: "layout",
+    # "connectivity", and "structured" (sampled as fractions, so it means the same thing on
+    # every device size). The per-column "columns" mode is not size-independent and is refused.
+    benchmarks: tuple[str, ...] = ()
+    # Size each design's devices to its own block demand (autosize; needs synthesis + pack).
+    # False = every design uses this config's width/height.
+    autosize_designs: bool = True
+    # Where designs are staged for the multi-benchmark search (default: <prep_dir>/bench).
+    stage_dir: str = ""
+
 def sample_layout(trial: optuna.Trial, cfg: SearchConfig) -> LayoutSpec:
     family = trial.suggest_categorical("family", ["distributed", "edge"])
     asymmetry = trial.suggest_float("asymmetry", 0.0, 1.0)
@@ -276,6 +291,28 @@ def sample_structured(trial: optuna.Trial, cfg: SearchConfig) -> ColumnLayoutSpe
     stagger = trial.suggest_float("stagger", 0.0, 1.0)
     band_pos = trial.suggest_float("band_pos", 0.15, 0.85)
     return structured_columns(n, nd, nb, dsp_l0, bram_l0, cluster, stagger, band_pos)
+
+
+def sample_structured_fractions(trial: optuna.Trial) -> dict:
+    """The structured layout parameters with the layer-0 shares as fractions of the device's
+    DSP / BRAM columns, so one trial means the same arrangement on devices of any size
+    (used by the multi-benchmark search)."""
+    return {
+        "dsp_frac_l0": trial.suggest_float("dsp_frac_l0", 0.0, 1.0),
+        "bram_frac_l0": trial.suggest_float("bram_frac_l0", 0.0, 1.0),
+        "cluster": trial.suggest_float("cluster", 0.0, 1.0),
+        "stagger": trial.suggest_float("stagger", 0.0, 1.0),
+        "band_pos": trial.suggest_float("band_pos", 0.15, 0.85),
+    }
+
+
+def structured_from_fractions(cfg: SearchConfig, p: dict) -> ColumnLayoutSpec:
+    """structured_columns() for cfg's device, from sample_structured_fractions() values."""
+    n = cfg.width - 2
+    _, nd, nb = column_counts(cfg)
+    dsp_l0 = int(math.floor(p["dsp_frac_l0"] * 2 * nd + 0.5))
+    bram_l0 = int(math.floor(p["bram_frac_l0"] * 2 * nb + 0.5))
+    return structured_columns(n, nd, nb, dsp_l0, bram_l0, p["cluster"], p["stagger"], p["band_pos"])
 
 
 def sample_connectivity(trial: optuna.Trial, cfg: SearchConfig):
@@ -620,6 +657,132 @@ def make_objective(cfg: SearchConfig, block_types=None, study: Optional[optuna.S
 
     return objective
 
+SUITE_MODES = ("layout", "connectivity", "structured")
+
+
+def design_configs(cfg: SearchConfig) -> list[tuple[str, SearchConfig]]:
+    """One single-design SearchConfig per entry of cfg.benchmarks: staged into its own
+    directory and, with autosize_designs, sized to its measured demand. Each gets its own
+    run_tag, so run names never collide across designs."""
+    import dataclasses
+    from benchmark_suites import expand, stage_design, is_verilog_entry
+    if cfg.search_mode not in SUITE_MODES:
+        raise ValueError(f"multi-benchmark search supports search_mode in {SUITE_MODES}, not "
+                         f"'{cfg.search_mode}' (per-column keys depend on the device width)")
+    entries = expand(cfg.benchmarks, cfg.lazagna_root)
+    if not entries:
+        raise ValueError("SearchConfig.benchmarks is set but names no designs")
+    stage_root = cfg.stage_dir or cfg.prep_dir or os.path.join(cfg.lazagna_root, "prep_cache")
+    out = []
+    for i, entry in enumerate(entries):
+        bdir = stage_design(entry, cfg.lazagna_root, stage_root, prefix="suite_")
+        sub = dataclasses.replace(cfg, benchmark_dir=bdir, is_verilog=is_verilog_entry(entry),
+                                  benchmarks=(), run_tag=f"{cfg.run_tag}d{i}")
+        if cfg.autosize_designs:
+            sub, _ = autosize(sub)
+        out.append((entry, sub))
+    return out
+
+
+def _shared_value(path: str, compute, polls: int = 180, poll_s: int = 20):
+    """(cpd, wl) cached in a JSON file that many workers share: the first to arrive computes
+    it (O_EXCL lock file), the rest poll; if the owner died holding the lock, compute anyway."""
+    import time as _t
+    got = _read_baseline(path)
+    if got is not None:
+        return got
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    lock = path + ".lock"
+    try:
+        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        owner = True
+    except FileExistsError:
+        owner = False
+    if not owner:
+        for _ in range(polls):
+            _t.sleep(poll_s)
+            got = _read_baseline(path)
+            if got is not None:
+                return got
+    cpd, wl = compute()
+    _write_baseline(path, cpd, wl)
+    return cpd, wl
+
+
+def make_suite_objective(cfg: SearchConfig, designs: Optional[list] = None,
+                         baseline_dir: Optional[str] = None):
+    """Objective for the multi-benchmark search (cfg.benchmarks set; see SearchConfig).
+
+    Per trial: one architecture is sampled, evaluated on every design, and compared with each
+    design's own 3D reference (the evenly spread, aligned layout at full connectivity, as in
+    make_objective). Returns (-CPD gain %, -WL gain %) where gain = 100 * (1 - geomean of the
+    per-design new/reference ratios). Per-design numbers go to the trial's user attrs. A
+    design that fails prunes the trial. References are computed once per design and shared
+    through files in `baseline_dir` (default <prep_dir>/baselines when prep_dir is set)."""
+    designs = designs if designs is not None else design_configs(cfg)
+    if baseline_dir is None and cfg.prep_dir:
+        baseline_dir = os.path.join(cfg.prep_dir, "baselines")
+    baselines: dict = {}
+
+    def reference(entry, sub):
+        if entry in baselines:
+            return baselines[entry]
+
+        def compute():
+            m, err = _run_one(sub, reference_columns(sub), f"{sub.run_tag}ref", sub.arch_type, 1.0, 0.739)
+            if m is None:
+                raise RuntimeError(f"reference run failed for {entry}: {err}")
+            return m
+        if baseline_dir:
+            got = _shared_value(os.path.join(baseline_dir, f"{baseline_signature(sub)}.json"), compute)
+        else:
+            got = compute()
+        baselines[entry] = got
+        return got
+
+    def objective(trial: optuna.Trial) -> tuple[float, float]:
+        if cfg.search_mode == "connectivity":
+            arch_type, connectivity, connection_type, delay_ratio = sample_connectivity(trial, cfg)
+            spec_for = lambda sub: NAMED_LAYOUTS["aligned"]
+        else:
+            if cfg.search_mode == "structured":
+                p = sample_structured_fractions(trial)
+                spec_for = lambda sub: structured_from_fractions(sub, p)
+            else:
+                spec = sample_layout(trial, cfg)
+                spec_for = lambda sub: spec
+            arch_type = cfg.arch_type
+            connectivity = trial.suggest_categorical("connectivity", list(cfg.connectivity_choices))
+            connection_type = "subset"
+            delay_ratio = trial.suggest_float("delay_ratio", *cfg.delay_ratio_range)
+
+        r_cpd, r_wl, per = [], [], {}
+        for i, (entry, sub) in enumerate(designs):
+            base_cpd, base_wl = reference(entry, sub)
+            metrics, err = _run_one(sub, spec_for(sub), f"{cfg.run_tag}t{trial.number}d{i}",
+                                    arch_type, connectivity, delay_ratio, connection_type)
+            if metrics is None:
+                trial.set_user_attr("failed_design", entry)
+                trial.set_user_attr("stderr_tail", err or "parse_failed")
+                raise optuna.TrialPruned()
+            cpd, wl = metrics
+            r_cpd.append(cpd / base_cpd)
+            r_wl.append(wl / base_wl)
+            per[entry] = {"cpd": cpd, "wl": wl, "baseline_cpd": base_cpd, "baseline_wl": base_wl,
+                          "cpd_impr_pct": 100.0 * (base_cpd - cpd) / base_cpd,
+                          "wl_impr_pct": 100.0 * (base_wl - wl) / base_wl}
+
+        cpd_impr = 100.0 * (1.0 - _geomean(r_cpd))
+        wl_impr = 100.0 * (1.0 - _geomean(r_wl))
+        trial.set_user_attr("cpd_impr_pct", cpd_impr)
+        trial.set_user_attr("wl_impr_pct", wl_impr)
+        trial.set_user_attr("designs", [e for e, _ in designs])
+        trial.set_user_attr("per_design", per)
+        return -cpd_impr, -wl_impr
+
+    return objective
+
+
 def _make_sampler(cfg: SearchConfig):
     if cfg.sampler == "nsga2":
         return optuna.samplers.NSGAIISampler()
@@ -670,7 +833,8 @@ def run_study(cfg: SearchConfig, n_trials: int = 40, seed_named: bool = True,
                                               cfg.edge_fraction_range[1])
             study.enqueue_trial(params, user_attrs={"seeded_from": name})
 
-    study.optimize(make_objective(cfg, study=study), n_trials=n_trials)
+    objective = make_suite_objective(cfg) if cfg.benchmarks else make_objective(cfg, study=study)
+    study.optimize(objective, n_trials=n_trials)
     return study
 
 def report(study: optuna.Study) -> None:

@@ -1,7 +1,7 @@
 # Main scripting file to run LaZagna
 
 from run_interface import run_interface, ITD_paper_top_modules, ITD_subset_top_modules, ITD_quick_top_modules, VTR_benchmarks_top_modules
-from file_handling import get_files_with_extension
+from file_handling import get_files_with_extension, extract_file_name
 from yaml_file_processing_v2 import get_run_params_from_yaml_v2
 import os
 from concurrent.futures import ProcessPoolExecutor
@@ -31,27 +31,81 @@ def run_job(param):
     param_copy['num_task_workers'] = param.get('num_task_workers', 1)
     return run_interface(params=param_copy)
 
+def top_module_names_for(benchmarks_dir, is_verilog_benchmarks):
+    if is_verilog_benchmarks and benchmarks_dir == original_dir + "/benchmarks/ITD_paper":
+        return ITD_paper_top_modules
+    elif is_verilog_benchmarks and benchmarks_dir == original_dir + "/benchmarks/VTR_benchmarks":
+        return VTR_benchmarks_top_modules
+    elif is_verilog_benchmarks and benchmarks_dir == original_dir + "/benchmarks/ITD_subset":
+        return ITD_subset_top_modules
+    elif is_verilog_benchmarks and benchmarks_dir == original_dir + "/benchmarks/ITD_quick":
+        return ITD_quick_top_modules
+    elif is_verilog_benchmarks and benchmarks_dir == original_dir + "/benchmarks/eltwise":
+        return eltwise_top_modules
+    # Single-design or custom dirs: look the top module up by file name across every
+    # known suite (VTR designs often name their top differently from the file).
+    return {**ITD_paper_top_modules, **ITD_subset_top_modules,
+            **ITD_quick_top_modules, **VTR_benchmarks_top_modules,
+            **eltwise_top_modules}
+
+
+def benchmark_files_for_entry(param):
+    """(blif, verilog, act) file lists for one entry of the extended `benchmarks:` forms
+    (suite / designs filter / several entries; see yaml_file_processing_v2).
+
+    Unlike the plain directory form, the three lists are matched by file name (a design's
+    .blif, .v and .act sit side by side), helper files of a registered suite are skipped,
+    and a `designs` filter that names a missing design is an error rather than a silent skip."""
+    import sys as _sys
+    if original_dir not in _sys.path:
+        _sys.path.append(original_dir)
+    from benchmark_suites import SUITES
+
+    benchmarks_dir = param["benchmarks_dir"]
+    is_verilog = param.get("is_verilog_benchmarks", False)
+    suite = SUITES.get(param.get("benchmark_suite", ""))
+    exclude = set(suite.exclude) if suite is not None and \
+        os.path.normpath(suite.path(original_dir)) == os.path.normpath(benchmarks_dir) else set()
+    wanted = list(param.get("benchmark_designs") or [])
+
+    ext = ".v" if is_verilog else ".blif"
+    found = sorted(f for f in get_files_with_extension(benchmarks_dir, ext)
+                   if extract_file_name(f) not in exclude)
+    if wanted:
+        by_name = {}
+        for f in found:
+            by_name.setdefault(extract_file_name(f), f)
+        missing = [d for d in wanted if d not in by_name]
+        if missing:
+            raise ValueError(f"design(s) {missing} not found in {benchmarks_dir}. "
+                             f"Available: {sorted(by_name)}")
+        found = [by_name[d] for d in wanted]
+    if not found:
+        raise ValueError(f"no {ext} designs found in {benchmarks_dir}")
+
+    if is_verilog:
+        return found, list(found), list(found)
+    verilog, act = [], []
+    for blif in found:
+        stem = os.path.splitext(blif)[0]
+        for lst, e in ((verilog, ".v"), (act, ".act")):
+            if not os.path.isfile(stem + e):
+                raise ValueError(f"{blif}: the BLIF flow also needs {os.path.basename(stem + e)} next to it")
+            lst.append(stem + e)
+    return found, verilog, act
+
+
 def setup_benchmark_files(run_params):
     for param in run_params:
         is_verilog_benchmarks = param.get("is_verilog_benchmarks", False)
         benchmarks_dir = param.get("benchmarks_dir", original_dir + "/benchmarks/MCNC_benchmarks")
 
-        if is_verilog_benchmarks and benchmarks_dir == original_dir + "/benchmarks/ITD_paper":
-            top_module_names = ITD_paper_top_modules
-        elif is_verilog_benchmarks and benchmarks_dir == original_dir + "/benchmarks/VTR_benchmarks":
-            top_module_names = VTR_benchmarks_top_modules
-        elif is_verilog_benchmarks and benchmarks_dir == original_dir + "/benchmarks/ITD_subset":
-            top_module_names = ITD_subset_top_modules
-        elif is_verilog_benchmarks and benchmarks_dir == original_dir + "/benchmarks/ITD_quick":
-            top_module_names = ITD_quick_top_modules
-        elif is_verilog_benchmarks and benchmarks_dir == original_dir + "/benchmarks/eltwise":
-            top_module_names = eltwise_top_modules
-        else:
-            # Single-design or custom dirs: look the top module up by file name across every
-            # known suite (VTR designs often name their top differently from the file).
-            top_module_names = {**ITD_paper_top_modules, **ITD_subset_top_modules,
-                                **ITD_quick_top_modules, **VTR_benchmarks_top_modules,
-                                **eltwise_top_modules}
+        top_module_names = top_module_names_for(benchmarks_dir, is_verilog_benchmarks)
+
+        if "benchmark_suite" in param:      # extended `benchmarks:` form
+            param['blif_files'], param['verilog_files'], param['act_files'] = benchmark_files_for_entry(param)
+            param['top_module_names'] = top_module_names
+            continue
 
         if is_verilog_benchmarks:
             blif_files = get_files_with_extension(benchmarks_dir, ".v")
