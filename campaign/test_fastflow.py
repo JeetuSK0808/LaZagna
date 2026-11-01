@@ -8,7 +8,6 @@
 # env: TEST_DESIGN (koios/eltwise_layer), SEEDS (3), TALL (1), CW (300), SKIP_EQUIV
 import json
 import os
-import shutil
 import sys
 import time
 

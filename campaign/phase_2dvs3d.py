@@ -11,7 +11,6 @@
 #                        benchmark_suites.SUITES), CW (300), TALL (1), TARGET_UTIL (0.8)
 import os
 import re
-import shutil
 import sys
 
 ROOT = os.environ.get("LAZAGNA_ROOT", "/opt/LaZagna")

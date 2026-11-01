@@ -23,7 +23,6 @@
 #      FIDELITY ("place"), TALL (1), TARGET_UTIL (0.8),
 #      PROMOTE_TOP (10), PROMOTE_RANDOM (10), KEEP_RRG (unset -> per-trial RRG cleanup on)
 import os
-import shutil
 import sys
 import time
 
@@ -77,23 +76,9 @@ if "study" not in inspect.signature(make_objective).parameters:
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
-def ensure_bench(name: str, src_rel: str) -> str:
-    """Single-design benchmark dir on the HOST work dir (container benchmarks/ is read-only)."""
-    bdir = os.path.join(WORK, "bench", name)
-    dst = os.path.join(bdir, os.path.basename(src_rel))
-    if not os.path.exists(dst):
-        os.makedirs(bdir, exist_ok=True)
-        src = os.path.join(ROOT, src_rel)
-        if not os.path.exists(src):
-            sys.exit(f"FATAL: benchmark source missing: {src}")
-        tmp = dst + f".w{WORKER_ID}.tmp"
-        shutil.copy(src, tmp)
-        os.replace(tmp, dst)  # atomic vs racing workers
-    return bdir
-
-
 def stage_bench(entry: str, prefix: str) -> str:
-    """stage_design() for a "<suite>/<name>" entry; a missing source is fatal, as before."""
+    """Single-design benchmark dir on the HOST work dir (container benchmarks/ is read-only),
+    via stage_design(); a missing source is fatal, as before."""
     try:
         return stage_design(entry, ROOT, WORK, prefix=prefix)
     except (FileNotFoundError, KeyError, ValueError) as e:

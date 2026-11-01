@@ -82,7 +82,7 @@ if [ -n "${CHARACTERIZE:-}" ]; then
   if [ -n "${CHAR_DESIGNS:-}" ]; then
     NDES="$(echo "$CHAR_DESIGNS" | tr ',' ' ' | wc -w)"
   else
-    NDES="$(python3 -c "import re;s=open('campaign/characterize.py').read();b=s[s.index('DEFAULT_DESIGNS'):s.index(']',s.index('DEFAULT_DESIGNS'))];print(len(re.findall(r'\"(?:koios|vtr)/',b)))")"
+    NDES="$(python3 -c "import re;s=open('campaign/characterize.py').read();b=s[s.index('DEFAULT_DESIGNS'):s.index(']',s.index('DEFAULT_DESIGNS'))];print(len(re.findall(r'\"[A-Za-z0-9_]+/',b)))")"
   fi
   CHENV="ALL"
   CHID="$(sbatch --parsable -A "$ACCT" -q "$QUEUE" $DEP --array=0-$((NDES-1)) \
