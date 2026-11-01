@@ -119,7 +119,8 @@ def list_designs(suite: str | Suite, lazagna_root: str) -> list[str]:
 
 def expand(entries: Iterable[str], lazagna_root: str) -> list[str]:
     """Expand 'suite' / 'suite/*' to every design in the suite; check 'suite/design' entries.
-    Keeps order and drops duplicates."""
+    Keeps order and drops duplicates. A suite with no designs, a missing design and a helper
+    file named as a design (e.g. 'koios/test') are errors."""
     out: list[str] = []
     for e in entries:
         e = e.strip()
@@ -127,9 +128,14 @@ def expand(entries: Iterable[str], lazagna_root: str) -> list[str]:
             continue
         name, _, design = e.partition("/")
         if design in ("", "*"):
-            items = [f"{name}/{d}" for d in list_designs(name, lazagna_root)]
+            designs = list_designs(name, lazagna_root)
+            if not designs:
+                raise ValueError(f"suite '{name}' has no designs in {get_suite(name).path(lazagna_root)}")
+            items = [f"{name}/{d}" for d in designs]
         else:
             s, _ = parse_entry(e)
+            if design in s.exclude:
+                raise ValueError(f"'{e}' is a helper file of suite '{s.name}', not a design")
             if design_files(e, lazagna_root)[s.fmt] is None:
                 raise FileNotFoundError(f"design '{e}' not found in {s.path(lazagna_root)}")
             items = [e]

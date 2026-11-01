@@ -1,4 +1,3 @@
-import glob
 import json
 import os
 import random
@@ -88,6 +87,19 @@ def test_same_basename_entries_get_unique_labels(at_fake_root, tmp_path):
         {"suite": "eltwise"}]}))
     ids = [c["cur_loop_identifier"] for c in combos]
     assert len(set(ids)) == 2, ids
+
+
+def test_same_suite_twice_still_skips_helpers(at_fake_root, tmp_path):
+    """A suite listed twice gets a unique run label, but both entries are still that suite,
+    so its helper files (*_include.v, test.v) are never run as designs."""
+    combos = _run(_write(tmp_path, {"experiment_name": "k", "benchmarks": [
+        {"suite": "koios", "designs": ["eltwise_layer"]}, {"suite": "koios"}]}))
+    assert [c["cur_loop_identifier"] for c in combos] == ["k_koios_vp_0.739", "k_koios2_vp_0.739"]
+    assert [c["benchmark_suite"] for c in combos] == ["koios", "koios"]
+    params = lzmain.setup_benchmark_files(combos)
+    assert [os.path.basename(f) for f in params[0]["verilog_files"]] == ["eltwise_layer.v"]
+    assert sorted(os.path.basename(f) for f in params[1]["verilog_files"]) == [
+        "attention_layer.v", "eltwise_layer.v", "tpu_like.small.os.v"]
 
 
 @pytest.mark.parametrize("bench, err", [

@@ -87,3 +87,21 @@ def test_stage_missing_source(fake_root, tmp_path):
 def test_suite_for_directory(fake_root):
     assert bs.suite_for_directory("{lazagna_root}/benchmarks/VTR_benchmarks", fake_root).name == "vtr"
     assert bs.suite_for_directory(fake_root + "/benchmarks/somewhere_else", fake_root) is None
+
+
+def test_expand_rejects_an_empty_suite(fake_root):
+    os.makedirs(os.path.join(fake_root, "benchmarks", "empty_suite_dir"))
+    s = bs.Suite("empty", "benchmarks/empty_suite_dir", bs.VERILOG)
+    bs.SUITES["empty"] = s
+    try:
+        with pytest.raises(ValueError, match="no designs"):
+            bs.expand(["empty"], fake_root)
+    finally:
+        del bs.SUITES["empty"]
+
+
+def test_expand_rejects_a_helper_file(fake_root):
+    with pytest.raises(ValueError, match="helper"):
+        bs.expand(["koios/test"], fake_root)
+    with pytest.raises(ValueError, match="helper"):
+        bs.expand(["koios/hard_block_include"], fake_root)

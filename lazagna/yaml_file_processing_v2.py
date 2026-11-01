@@ -162,12 +162,12 @@ def build_benchmark_mapping(user_benchmarks) -> Optional[List[Dict]]:
             if "is_verilog" in e and bool(e["is_verilog"]) != s.is_verilog:
                 raise ValueError(f"benchmarks entry {i + 1}: suite '{s.name}' is "
                                  f"{'Verilog' if s.is_verilog else 'BLIF'}, but is_verilog is {e['is_verilog']}.")
-            is_verilog, label = s.is_verilog, s.name
+            is_verilog, name = s.is_verilog, s.name
         elif "directory" in e:
             directory = e["directory"].replace("{lazagna_root}", LAZAGNA_ROOT)
             is_verilog = bool(e.get("is_verilog", False))
             known = bs.suite_for_directory(directory, LAZAGNA_ROOT)
-            label = known.name if known else os.path.basename(os.path.normpath(directory))
+            name = known.name if known else os.path.basename(os.path.normpath(directory))
         else:
             raise ValueError(f"benchmarks entry {i + 1} needs 'suite' or 'directory'.")
         designs = e.get("designs") or []
@@ -175,19 +175,22 @@ def build_benchmark_mapping(user_benchmarks) -> Optional[List[Dict]]:
             designs = [designs]
         if not isinstance(designs, list) or not all(isinstance(d, str) for d in designs):
             raise ValueError(f"benchmarks entry {i + 1}: 'designs' must be a list of design names.")
-        while label in labels:              # two entries resolving to the same name
+        # The run-identifier label must be unique; the suite name stays as is, so main.py
+        # still recognizes the suite (and skips its helper files) when it is listed twice.
+        label = name
+        while label in labels:
             label += str(i + 1)
         labels.append(label)
         mapping.append({
             "benchmarks_dir": directory,
             "is_verilog_benchmarks": is_verilog,
-            "benchmark_suite": label,
+            "benchmark_suite": name,
             "benchmark_designs": list(designs),
             "benchmark_tag": "",
         })
     if len(mapping) > 1:
-        for m in mapping:
-            m["benchmark_tag"] = "_" + m["benchmark_suite"]
+        for m, label in zip(mapping, labels):
+            m["benchmark_tag"] = "_" + label
     return mapping
 
 
