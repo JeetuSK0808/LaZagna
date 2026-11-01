@@ -672,6 +672,17 @@ def design_configs(cfg: SearchConfig) -> list[tuple[str, SearchConfig]]:
     entries = expand(cfg.benchmarks, cfg.lazagna_root)
     if not entries:
         raise ValueError("SearchConfig.benchmarks is set but names no designs")
+    # Staging dirs, the synthesis + pack cache and the reference files are all keyed by the
+    # design name, so the same name from two suites (koios/eltwise_layer and
+    # itd_quick/eltwise_layer, mcnc/des and des/des, ...) would silently run one file twice.
+    by_name: dict[str, list[str]] = {}
+    for e in entries:
+        by_name.setdefault(e.split("/", 1)[1], []).append(e)
+    dup = {n: es for n, es in by_name.items() if len(es) > 1}
+    if dup:
+        raise ValueError("the same design name comes from more than one suite: "
+                         + "; ".join(" and ".join(es) for es in dup.values())
+                         + ". Designs are staged and cached by name, so list each name once.")
     stage_root = cfg.stage_dir or cfg.prep_dir or os.path.join(cfg.lazagna_root, "prep_cache")
     out = []
     for i, entry in enumerate(entries):
@@ -686,25 +697,32 @@ def design_configs(cfg: SearchConfig) -> list[tuple[str, SearchConfig]]:
 
 def _shared_value(path: str, compute, polls: int = 180, poll_s: int = 20):
     """(cpd, wl) cached in a JSON file that many workers share: the first to arrive computes
-    it (O_EXCL lock file), the rest poll; if the owner died holding the lock, compute anyway."""
+    it (O_EXCL lock file), the rest poll. If the computation fails, the lock is released so
+    the next caller retries at once instead of waiting out the polls. If the owner died
+    holding the lock, compute anyway."""
     import time as _t
-    got = _read_baseline(path)
-    if got is not None:
-        return got
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     lock = path + ".lock"
-    try:
-        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-        owner = True
-    except FileExistsError:
-        owner = False
-    if not owner:
-        for _ in range(polls):
-            _t.sleep(poll_s)
-            got = _read_baseline(path)
-            if got is not None:
-                return got
-    cpd, wl = compute()
+    for _ in range(polls + 1):
+        got = _read_baseline(path)
+        if got is not None:
+            return got
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        except FileExistsError:
+            _t.sleep(poll_s)            # another worker is computing it
+            continue
+        try:
+            cpd, wl = compute()
+        except BaseException:
+            try:
+                os.remove(lock)
+            except OSError:
+                pass
+            raise
+        _write_baseline(path, cpd, wl)
+        return cpd, wl
+    cpd, wl = compute()                 # the owner died holding the lock
     _write_baseline(path, cpd, wl)
     return cpd, wl
 
@@ -743,7 +761,10 @@ def make_suite_objective(cfg: SearchConfig, designs: Optional[list] = None,
     def objective(trial: optuna.Trial) -> tuple[float, float]:
         if cfg.search_mode == "connectivity":
             arch_type, connectivity, connection_type, delay_ratio = sample_connectivity(trial, cfg)
-            spec_for = lambda sub: NAMED_LAYOUTS["aligned"]
+            # The reference's own columns, so a trial differs from the reference only in its
+            # connectivity, switch-block type and delay (at 1.0 / arch_type / 0.739 it IS the
+            # reference).
+            spec_for = lambda sub: reference_columns(sub)
         else:
             if cfg.search_mode == "structured":
                 p = sample_structured_fractions(trial)

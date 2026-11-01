@@ -94,3 +94,78 @@ def test_structured_fractions_cover_the_range():
 def test_single_design_path_untouched():
     c = lo.SearchConfig(lazagna_root="/r", benchmark_dir="/r/bench/x", is_verilog=True, seeds=3)
     assert lo.baseline_signature(c) == "981dccf36fad"   # value from before the change
+
+
+def test_same_design_name_from_two_suites_is_refused(fake_root, tmp_path):
+    """Staging dirs, the synthesis cache and the reference files are keyed by design name, so
+    koios/eltwise_layer + itd_quick/eltwise_layer would silently run one file twice."""
+    c = lo.SearchConfig(lazagna_root=fake_root, benchmark_dir="", search_mode="structured",
+                        benchmarks=("koios/eltwise_layer", "itd_quick"), autosize_designs=False,
+                        stage_dir=str(tmp_path / "stage"))
+    with pytest.raises(ValueError, match="koios/eltwise_layer and itd_quick/eltwise_layer"):
+        lo.design_configs(c)
+
+
+def test_connectivity_mode_uses_the_reference_columns(cfg, calls, monkeypatch):
+    """In connectivity mode a trial differs from its design's reference only in connectivity,
+    type and delay: at full connectivity it is the reference."""
+    import dataclasses
+    seen = []
+    orig = lo._run_one
+
+    def spy(c, spec, name, *a, **k):
+        seen.append((name, spec, lo.reference_columns(c)))
+        return orig(c, spec, name, *a, **k)
+    monkeypatch.setattr(lo, "_run_one", spy)
+    c = dataclasses.replace(cfg, search_mode="connectivity")
+    st = optuna.create_study(directions=["minimize", "minimize"])
+    st.optimize(lo.make_suite_objective(c, designs=lo.design_configs(c)), n_trials=2)
+    trials = [(spec, ref) for name, spec, ref in seen if not name.endswith("ref")]
+    assert trials and all(spec == ref for spec, ref in trials)
+    assert {"type_sb", "connectivity", "delay_ratio"} <= set(st.trials[0].params)
+
+
+def test_shared_value_computes_once_and_reuses(tmp_path):
+    path = str(tmp_path / "b" / "ref.json")
+    n = []
+    compute = lambda: n.append(1) or (2.0, 30.0)
+    assert lo._shared_value(path, compute) == (2.0, 30.0)
+    assert lo._shared_value(path, compute) == (2.0, 30.0)
+    assert len(n) == 1
+
+
+def test_shared_value_waits_for_the_owner(tmp_path, monkeypatch):
+    import time
+    path = str(tmp_path / "ref.json")
+    open(path + ".lock", "w").close()                   # another worker is computing
+    sleeps = []
+
+    def fake_sleep(s):
+        sleeps.append(s)
+        if len(sleeps) == 2:
+            lo._write_baseline(path, 1.5, 40.0)        # ... and publishes its result
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+    assert lo._shared_value(path, lambda: pytest.fail("must not compute"), poll_s=7) == (1.5, 40.0)
+    assert sleeps == [7, 7]
+
+
+def test_shared_value_failure_releases_the_lock(tmp_path, monkeypatch):
+    import time
+    path = str(tmp_path / "ref.json")
+    monkeypatch.setattr(time, "sleep", lambda s: pytest.fail("must not wait"))
+
+    def boom():
+        raise RuntimeError("reference run failed")
+    with pytest.raises(RuntimeError):
+        lo._shared_value(path, boom)
+    assert not os.path.exists(path + ".lock")
+    assert lo._shared_value(path, lambda: (3.0, 9.0)) == (3.0, 9.0)   # next caller retries at once
+
+
+def test_shared_value_owner_died(tmp_path, monkeypatch):
+    import time
+    path = str(tmp_path / "ref.json")
+    open(path + ".lock", "w").close()                   # stale lock, no result ever appears
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    assert lo._shared_value(path, lambda: (4.0, 5.0), polls=3) == (4.0, 5.0)
+    assert lo._read_baseline(path) == (4.0, 5.0)
