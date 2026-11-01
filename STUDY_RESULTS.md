@@ -170,4 +170,6 @@ sbatch -A <acct> --array=0-278%28 \
   experiment.sbatch
 # analysis (host, needs matplotlib)
 python3 campaign/analyze.py campaign_work/study docs/study
+# SHAP view of the same runs, docs/study/shap_study.md (needs requirements-analysis.txt)
+python3 campaign/shap_study.py docs/study docs/study
 ```
