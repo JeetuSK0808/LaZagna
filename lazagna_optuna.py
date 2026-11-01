@@ -167,6 +167,17 @@ class SearchConfig:
     # Where designs are staged for the multi-benchmark search (default: <prep_dir>/bench).
     stage_dir: str = ""
 
+    # Priorities (optional; the defaults leave the objective exactly as it was). By default the
+    # search has two objectives, CPD gain and WL gain, and looks for their Pareto front.
+    # objective_weights=(w_cpd, w_wl) makes it ONE objective instead: maximize
+    # w_cpd * CPD gain + w_wl * WL gain, e.g. (1, 0) = CPD only, (0.5, 0.5) = balanced.
+    objective_weights: tuple[float, ...] = ()
+    # Cost of vertical links: link_penalty percentage points are taken off each gain per unit
+    # of link_fraction() (share of 3D switch blocks x share of their channels that cross;
+    # 1.0 = full 3D connectivity, 0 for the 2D type). E.g. 2.0: full connectivity has to buy
+    # 2 points of gain to tie with an architecture that has no vertical links.
+    link_penalty: float = 0.0
+
 def sample_layout(trial: optuna.Trial, cfg: SearchConfig) -> LayoutSpec:
     family = trial.suggest_categorical("family", ["distributed", "edge"])
     asymmetry = trial.suggest_float("asymmetry", 0.0, 1.0)
@@ -653,9 +664,44 @@ def make_objective(cfg: SearchConfig, block_types=None, study: Optional[optuna.S
         trial.set_user_attr("baseline_cpd", baseline["cpd"])
         trial.set_user_attr("baseline_wl", baseline["wl"])
 
-        return -cpd_impr, -wl_impr
+        if not (cfg.objective_weights or cfg.link_penalty):
+            return -cpd_impr, -wl_impr
+        links = link_fraction(arch_type, connectivity)
+        trial.set_user_attr("link_fraction", links)
+        return objective_values(cfg, cpd_impr, wl_impr, links)
 
+    check_priorities(cfg)
     return objective
+
+
+def link_fraction(arch_type: str, connectivity: float, vertical_connectivity: float = 1.0) -> float:
+    """Relative number of vertical links: the share of switch blocks that are 3D times the
+    share of their channels that cross (1.0 = full 3D connectivity; 0 for the 2D type)."""
+    return 0.0 if arch_type == "2d" else float(connectivity) * float(vertical_connectivity)
+
+
+def check_priorities(cfg: SearchConfig) -> None:
+    w = tuple(cfg.objective_weights)
+    if w and (len(w) != 2 or not all(math.isfinite(float(x)) for x in w) or not any(w)):
+        raise ValueError(f"objective_weights must be (w_cpd, w_wl) with at least one non-zero, got {w}")
+    if not math.isfinite(float(cfg.link_penalty)):
+        raise ValueError(f"link_penalty must be a finite number, got {cfg.link_penalty}")
+
+
+def n_objectives(cfg: SearchConfig) -> int:
+    """1 with objective_weights (one weighted objective), else 2 (CPD and WL, a Pareto front)."""
+    return 1 if cfg.objective_weights else 2
+
+
+def objective_values(cfg: SearchConfig, cpd_impr: float, wl_impr: float, links: float = 1.0):
+    """What the sampler minimizes, from the gains in %: (-CPD gain, -WL gain) by default; with
+    objective_weights, -(w_cpd * CPD gain + w_wl * WL gain). link_penalty * links is taken off
+    each gain first."""
+    pen = cfg.link_penalty * links
+    if cfg.objective_weights:
+        w_cpd, w_wl = cfg.objective_weights
+        return -(w_cpd * (cpd_impr - pen) + w_wl * (wl_impr - pen))
+    return -(cpd_impr - pen), -(wl_impr - pen)
 
 SUITE_MODES = ("layout", "connectivity", "structured")
 
@@ -734,9 +780,11 @@ def make_suite_objective(cfg: SearchConfig, designs: Optional[list] = None,
     Per trial: one architecture is sampled, evaluated on every design, and compared with each
     design's own 3D reference (the evenly spread, aligned layout at full connectivity, as in
     make_objective). Returns (-CPD gain %, -WL gain %) where gain = 100 * (1 - geomean of the
-    per-design new/reference ratios). Per-design numbers go to the trial's user attrs. A
-    design that fails prunes the trial. References are computed once per design and shared
-    through files in `baseline_dir` (default <prep_dir>/baselines when prep_dir is set)."""
+    per-design new/reference ratios); with objective_weights / link_penalty set, see
+    objective_values(). Per-design numbers go to the trial's user attrs. A design that fails
+    prunes the trial. References are computed once per design and shared through files in
+    `baseline_dir` (default <prep_dir>/baselines when prep_dir is set)."""
+    check_priorities(cfg)
     designs = designs if designs is not None else design_configs(cfg)
     if baseline_dir is None and cfg.prep_dir:
         baseline_dir = os.path.join(cfg.prep_dir, "baselines")
@@ -795,13 +843,18 @@ def make_suite_objective(cfg: SearchConfig, designs: Optional[list] = None,
 
         cpd_impr = 100.0 * (1.0 - _geomean(r_cpd))
         wl_impr = 100.0 * (1.0 - _geomean(r_wl))
+        links = link_fraction(arch_type, connectivity)
         trial.set_user_attr("cpd_impr_pct", cpd_impr)
         trial.set_user_attr("wl_impr_pct", wl_impr)
+        trial.set_user_attr("link_fraction", links)
         trial.set_user_attr("designs", [e for e, _ in designs])
         trial.set_user_attr("per_design", per)
-        return -cpd_impr, -wl_impr
+        return objective_values(cfg, cpd_impr, wl_impr, links)
 
     return objective
+
+
+SAMPLERS = ("tpe", "nsga2", "nsga3", "random", "qmc")
 
 
 def _make_sampler(cfg: SearchConfig):
@@ -809,7 +862,21 @@ def _make_sampler(cfg: SearchConfig):
         return optuna.samplers.NSGAIISampler()
     if cfg.sampler == "random":
         return optuna.samplers.RandomSampler()
-    return optuna.samplers.TPESampler(constant_liar=cfg.parallel)
+    if cfg.sampler == "nsga3":
+        return optuna.samplers.NSGAIIISampler()
+    if cfg.sampler == "qmc":
+        try:
+            import scipy.stats  # noqa: F401  (QMCSampler draws its Sobol sequence with scipy)
+        except ImportError as e:
+            raise ImportError("sampler 'qmc' needs scipy: pip install scipy "
+                              "(or pip install -r requirements-analysis.txt)") from e
+        # Unscrambled Sobol: workers that share the study continue one sequence. Categorical
+        # parameters are drawn at random (QMC has no categorical form), without a warning per trial.
+        return optuna.samplers.QMCSampler(warn_independent_sampling=False)
+    if cfg.sampler == "tpe":
+        return optuna.samplers.TPESampler(constant_liar=cfg.parallel)
+    # An unknown name used to fall back to TPE silently, which would mislabel a sampler comparison.
+    raise ValueError(f"unknown sampler '{cfg.sampler}'; choose one of: {', '.join(SAMPLERS)}")
 
 
 def journal_storage(path: str):
@@ -825,12 +892,30 @@ def journal_storage(path: str):
         return JournalStorage(JournalFileStorage(path))
 
 
+def enqueue_named_layouts(study: optuna.Study, cfg: SearchConfig) -> None:
+    """Queue the paper's named layouts as the first trials of a "layout" search."""
+    for name, spec in NAMED_LAYOUTS.items():
+        params = {
+            "family": spec.family,
+            "asymmetry": spec.asymmetry,
+            "separate_dsp_bram": spec.separate_dsp_bram,
+            "connectivity": 1.0,
+            "delay_ratio": 0.739,
+        }
+        if spec.family == "distributed":
+            params["hb_period"] = spec.hb_period if spec.hb_period in cfg.hb_period_choices else 8
+        else:
+            params["edge_fraction"] = min(max(spec.edge_fraction, cfg.edge_fraction_range[0]),
+                                          cfg.edge_fraction_range[1])
+        study.enqueue_trial(params, user_attrs={"seeded_from": name})
+
+
 def run_study(cfg: SearchConfig, n_trials: int = 40, seed_named: bool = True,
               study_name: str = "lazagna_3d", storage=None) -> optuna.Study:
     """`storage` may be an optuna storage URL string OR a storage object
     (e.g. journal_storage(...) for parallel/Lustre runs)."""
     study = optuna.create_study(
-        directions=["minimize", "minimize"],
+        directions=["minimize"] * n_objectives(cfg),
         study_name=study_name,
         storage=storage,
         load_if_exists=storage is not None,
@@ -838,21 +923,7 @@ def run_study(cfg: SearchConfig, n_trials: int = 40, seed_named: bool = True,
     )
 
     if seed_named and cfg.search_mode == "layout":
-
-        for name, spec in NAMED_LAYOUTS.items():
-            params = {
-                "family": spec.family,
-                "asymmetry": spec.asymmetry,
-                "separate_dsp_bram": spec.separate_dsp_bram,
-                "connectivity": 1.0,
-                "delay_ratio": 0.739,
-            }
-            if spec.family == "distributed":
-                params["hb_period"] = spec.hb_period if spec.hb_period in cfg.hb_period_choices else 8
-            else:
-                params["edge_fraction"] = min(max(spec.edge_fraction, cfg.edge_fraction_range[0]),
-                                              cfg.edge_fraction_range[1])
-            study.enqueue_trial(params, user_attrs={"seeded_from": name})
+        enqueue_named_layouts(study, cfg)
 
     objective = make_suite_objective(cfg) if cfg.benchmarks else make_objective(cfg, study=study)
     study.optimize(objective, n_trials=n_trials)

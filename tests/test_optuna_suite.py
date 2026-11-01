@@ -125,6 +125,111 @@ def test_connectivity_mode_uses_the_reference_columns(cfg, calls, monkeypatch):
     assert {"type_sb", "connectivity", "delay_ratio"} <= set(st.trials[0].params)
 
 
+@pytest.mark.filterwarnings("ignore::optuna.exceptions.ExperimentalWarning")
+@pytest.mark.parametrize("sampler", lo.SAMPLERS)
+def test_every_sampler_runs_the_multi_benchmark_search(cfg, calls, sampler):
+    import dataclasses
+    if sampler == "qmc":
+        pytest.importorskip("scipy")
+    c = dataclasses.replace(cfg, sampler=sampler)
+    st = optuna.create_study(directions=["minimize", "minimize"], sampler=lo._make_sampler(c))
+    st.optimize(lo.make_suite_objective(c, designs=lo.design_configs(c)), n_trials=6)
+    done = [t for t in st.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    assert len(done) == 6 and all(set(t.user_attrs["per_design"]) == {"vtr/sha", "mcnc/clma"} for t in done)
+
+
+def test_run_study_with_suite_and_weights(cfg, calls):
+    """run_study: a weighted search is a one-objective study whose value is the weighted gain."""
+    import dataclasses
+    st = lo.run_study(dataclasses.replace(cfg, sampler="random", objective_weights=(1.0, 0.0)),
+                      n_trials=3, study_name="w")
+    assert len(st.directions) == 1 and len(st.trials) == 3
+    for t in st.trials:
+        assert t.value == pytest.approx(-t.user_attrs["cpd_impr_pct"])
+
+
+def test_unknown_sampler_is_an_error(cfg):
+    import dataclasses
+    with pytest.raises(ValueError, match="unknown sampler 'cmaes'"):
+        lo._make_sampler(dataclasses.replace(cfg, sampler="cmaes"))
+
+
+def test_existing_sampler_names_unchanged(cfg):
+    import dataclasses
+    mk = lambda s, par=False: lo._make_sampler(dataclasses.replace(cfg, sampler=s, parallel=par))
+    assert isinstance(mk("tpe"), optuna.samplers.TPESampler)
+    assert isinstance(mk("nsga2"), optuna.samplers.NSGAIISampler)
+    assert isinstance(mk("random"), optuna.samplers.RandomSampler)
+
+
+def test_qmc_without_scipy_says_so(cfg, monkeypatch):
+    import dataclasses
+    import sys
+    monkeypatch.setitem(sys.modules, "scipy.stats", None)
+    with pytest.raises(ImportError, match="needs scipy"):
+        lo._make_sampler(dataclasses.replace(cfg, sampler="qmc"))
+
+
+# ---- priorities (objective_weights, link_penalty) -------------------------------------------
+
+def test_objective_values_defaults_are_the_plain_gains():
+    c = lo.SearchConfig(lazagna_root="/r", benchmark_dir="")
+    assert lo.objective_values(c, 3.5, -1.25, 1.0) == (-3.5, 1.25)
+    assert lo.n_objectives(c) == 2
+
+
+def test_objective_values_weights_and_link_penalty():
+    import dataclasses
+    c = lo.SearchConfig(lazagna_root="/r", benchmark_dir="")
+    w = dataclasses.replace(c, objective_weights=(0.7, 0.3))
+    assert lo.n_objectives(w) == 1
+    assert lo.objective_values(w, 10.0, 20.0) == pytest.approx(-(7.0 + 6.0))
+    p = dataclasses.replace(c, link_penalty=2.0)
+    assert lo.objective_values(p, 10.0, 20.0, links=0.5) == pytest.approx((-9.0, -19.0))
+    wp = dataclasses.replace(w, link_penalty=2.0)
+    assert lo.objective_values(wp, 10.0, 20.0, links=1.0) == pytest.approx(-(0.7 * 8 + 0.3 * 18))
+    assert lo.link_fraction("2d", 1.0) == 0.0 and lo.link_fraction("3d_sb", 0.25) == 0.25
+
+
+@pytest.mark.parametrize("bad", [dict(objective_weights=(1.0,)), dict(objective_weights=(0, 0)),
+                                 dict(objective_weights=(1, float("nan"))), dict(link_penalty=float("inf"))])
+def test_bad_priorities_are_refused(bad):
+    c = lo.SearchConfig(lazagna_root="/r", benchmark_dir="", **bad)
+    with pytest.raises(ValueError):
+        lo.check_priorities(c)
+
+
+def test_suite_objective_with_link_penalty(cfg, calls):
+    import dataclasses
+    c = dataclasses.replace(cfg, connectivity_choices=(0.5,), link_penalty=4.0)
+    st = optuna.create_study(directions=["minimize", "minimize"], sampler=optuna.samplers.RandomSampler(seed=0))
+    st.optimize(lo.make_suite_objective(c, designs=lo.design_configs(c)), n_trials=3)
+    for t in st.trials:
+        assert t.user_attrs["link_fraction"] == 0.5
+        assert t.values[0] == pytest.approx(-(t.user_attrs["cpd_impr_pct"] - 2.0))
+        assert t.values[1] == pytest.approx(-(t.user_attrs["wl_impr_pct"] - 2.0))
+
+
+def test_single_design_objective_unchanged_by_default(monkeypatch, tmp_path):
+    """Defaults: the single-design objective returns (-CPD gain, -WL gain) and records no new
+    attributes; with a link penalty it is charged and link_fraction recorded."""
+    import dataclasses
+    monkeypatch.setattr(lo, "_run_one", lambda c, s, name, *a, **k:
+                        ((10.0, 100.0), None) if name.endswith("ref") else ((9.0, 95.0), None))
+    c = lo.SearchConfig(lazagna_root="/r", benchmark_dir="/r/b/x", search_mode="connectivity",
+                        fine_connectivity_choices=(0.5,), run_tag="t")
+    st = optuna.create_study(directions=["minimize", "minimize"])
+    st.optimize(lo.make_objective(c), n_trials=1)
+    t = st.trials[0]
+    assert t.values == pytest.approx([-10.0, -5.0]) and "link_fraction" not in t.user_attrs
+    st2 = optuna.create_study(directions=["minimize", "minimize"])
+    st2.optimize(lo.make_objective(dataclasses.replace(c, link_penalty=2.0)), n_trials=1)
+    t2 = st2.trials[0]
+    assert t2.user_attrs["link_fraction"] == 0.5 and t2.values == pytest.approx([-9.0, -4.0])
+
+
+# ---- the shared reference file ---------------------------------------------------------------
+
 def test_shared_value_computes_once_and_reuses(tmp_path):
     path = str(tmp_path / "b" / "ref.json")
     n = []
