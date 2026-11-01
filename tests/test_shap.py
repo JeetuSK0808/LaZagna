@@ -91,3 +91,46 @@ def test_cli_on_sqlite(tmp_path):
     st.optimize(obj, n_trials=20)
     assert ls.main(["--storage", url, "--study", "s", "--out", str(tmp_path / "o"), "--no-plot", "--repeats", "2"]) == 0
     assert os.path.exists(tmp_path / "o" / "shap.md")
+
+
+def test_nan_cells_count_as_missing(tmp_path):
+    """A NaN in a numeric column must not turn the column categorical."""
+    rng = random.Random(4)
+    p = tmp_path / "runs.csv"
+    with open(p, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["conn", "gain"])
+        for i in range(30):
+            c = rng.random()
+            w.writerow(["nan" if i % 7 == 0 else c, 3 * (c if i % 7 else 0.5) + rng.gauss(0, 0.05)])
+    table = ls.table_from_csv(str(p), ["gain"])
+    _, names, _, kinds, fills = ls.encode(table)
+    assert kinds["conn"] == "numeric" and names == ["conn"] and "conn" in fills
+
+
+def test_group_col_adds_a_held_out_group_r2(tmp_path):
+    """Each 'design' has its own offset, known only through an id-like feature: random k-fold
+    looks great (it has seen every design), leaving whole designs out does not."""
+    rng = random.Random(5)
+    p = tmp_path / "runs.csv"
+    with open(p, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["id", "design", "design_size", "knob", "gain"])
+        for d in range(10):
+            offset, size = rng.uniform(-10, 10), rng.uniform(0, 1)
+            for k in range(8):
+                knob = rng.random()
+                w.writerow([f"{d}_{k}", f"d{d}", size, knob, offset + 0.5 * knob + rng.gauss(0, 0.1)])
+    table = ls.table_from_csv(str(p), ["gain"], id_col="id", group_col="design")
+    assert table.params == ["design_size", "knob"] and len(set(table.groups)) == 10
+    res = ls.shap_importance(table, "gain", n_repeats=2)
+    assert res["n_groups"] == 10
+    assert res["cv_r2"] > 0.8 and res["cv_r2_grouped"] < res["cv_r2"] - 0.5
+    md = ls.to_markdown([res])
+    assert "grouped CV R²" in md and "unseen" in md
+
+
+def test_without_groups_nothing_changes(tmp_path):
+    table = ls.table_from_study(_study(n=30))
+    res = ls.shap_importance(table, "cpd_impr_pct", n_repeats=1)
+    assert "cv_r2_grouped" not in res and "grouped" not in ls.to_markdown([res])

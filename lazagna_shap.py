@@ -13,7 +13,9 @@ prediction into one contribution per parameter. Reported for each parameter:
 
 Every table also reports the surrogate's cross-validated R^2 (out-of-fold predictions). When it
 is low the parameters do not predict the target well (seed noise dominates), and the
-importances should not be read as effects.
+importances should not be read as effects. With a group column (e.g. the design, for a table
+of runs over several designs), a second R^2 holds whole groups out: it says whether the
+surrogate predicts a design it has not seen, not just another run of a known one.
 
 Categorical parameters are one-hot encoded and their columns summed back into one SHAP value
 per parameter. Conditional parameters that a trial did not sample (e.g. hb_period when
@@ -28,6 +30,7 @@ works without them.
   python3 lazagna_shap.py --journal work/journal/columns_x.log --study columns_x
   python3 lazagna_shap.py --storage sqlite:///study.db --study lazagna_3d --target cpd_impr_pct
   python3 lazagna_shap.py --csv runs.csv --target cpd_gain --features a,b,c --out shap_out
+  python3 lazagna_shap.py --csv runs.csv --target cpd_gain --group-col design --id-col id
 """
 from __future__ import annotations
 
@@ -62,10 +65,20 @@ class Table:
     rows: list[dict]
     targets: dict[str, list[float]]
     params: list[str] = field(default_factory=list)
+    # Optional group label per sample (e.g. the design). When set, the surrogate is also
+    # cross-validated with whole groups held out (cv_r2_grouped), which shows how well it
+    # predicts an unseen group rather than another sample of a group it has seen.
+    groups: Optional[list] = None
 
 
 def _finite(x) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def _missing(v) -> bool:
+    """No value: not sampled, an empty cell, or a NaN / inf (which would otherwise turn a
+    numeric column into a categorical one)."""
+    return v is _MISSING or v is None or (isinstance(v, float) and not math.isfinite(v))
 
 
 def _target_value(trial, spec: str):
@@ -109,18 +122,20 @@ def _num(s):
 
 
 def table_from_csv(path: str, targets: Sequence[str], features: Optional[Sequence[str]] = None,
-                   id_col: Optional[str] = None) -> Table:
-    """One row per sample. Features default to every column that is not a target or the id."""
+                   id_col: Optional[str] = None, group_col: Optional[str] = None) -> Table:
+    """One row per sample. Features default to every column that is not a target, the id or
+    the group column. `group_col` (e.g. the design) enables the grouped CV R² (see Table)."""
     with open(path, newline="") as f:
         data = list(csv.DictReader(f))
     if not data:
         raise ValueError(f"{path} has no rows")
     cols = list(data[0].keys())
-    for t in targets:
+    for t in list(targets) + ([group_col] if group_col else []):
         if t not in cols:
-            raise ValueError(f"target column '{t}' not in {path} (columns: {cols})")
-    feats = list(features) if features else [c for c in cols if c not in targets and c != id_col]
-    ids, rows, tv = [], [], {t: [] for t in targets}
+            raise ValueError(f"column '{t}' not in {path} (columns: {cols})")
+    feats = list(features) if features else [c for c in cols
+                                             if c not in targets and c not in (id_col, group_col)]
+    ids, rows, tv, groups = [], [], {t: [] for t in targets}, []
     for i, r in enumerate(data):
         vals = [_num(r[t]) for t in targets]
         if not all(_finite(v) for v in vals):
@@ -129,7 +144,9 @@ def table_from_csv(path: str, targets: Sequence[str], features: Optional[Sequenc
         rows.append({c: (_num(r[c]) if r.get(c, "") != "" else _MISSING) for c in feats})
         for t, v in zip(targets, vals):
             tv[t].append(float(v))
-    return Table(ids=ids, rows=rows, targets=tv, params=feats)
+        if group_col:
+            groups.append(r[group_col])
+    return Table(ids=ids, rows=rows, targets=tv, params=feats, groups=groups if group_col else None)
 
 
 def _is_number(v) -> bool:
@@ -142,7 +159,7 @@ def encode(table: Table):
     cols, names, groups, kinds, fills = [], [], {}, {}, {}
     for p in table.params:
         vals = [r.get(p, _MISSING) for r in table.rows]
-        present = [v for v in vals if v is not _MISSING and v is not None]
+        present = [v for v in vals if not _missing(v)]
         if present and all(_is_number(v) for v in present):
             kinds[p] = "numeric"
             xs = sorted(float(v) for v in present)
@@ -150,7 +167,7 @@ def encode(table: Table):
             fill = min(xs, key=lambda x: (abs(x - med), x))   # an observed value, not an outlier
             col = []
             for v in vals:
-                if v is _MISSING or v is None:
+                if _missing(v):
                     col.append(fill)
                     fills[p] = fill
                 else:
@@ -161,7 +178,7 @@ def encode(table: Table):
         else:
             kinds[p] = "categorical"
             labels = _cat_labels(vals)
-            if any(v is _MISSING or v is None for v in vals):
+            if any(_missing(v) for v in vals):
                 fills[p] = _cat_fill(vals)
             groups[p] = []
             for c in sorted(set(labels)):
@@ -175,13 +192,13 @@ def encode(table: Table):
 def _cat_fill(vals) -> str:
     """Most common observed category (ties: alphabetical), used for trials without a value."""
     from collections import Counter
-    seen = Counter(str(v) for v in vals if v is not _MISSING and v is not None)
+    seen = Counter(str(v) for v in vals if not _missing(v))
     return min(seen, key=lambda c: (-seen[c], c)) if seen else "<missing>"
 
 
 def _cat_labels(vals) -> list:
     fill = _cat_fill(vals)
-    return [fill if (v is _MISSING or v is None) else str(v) for v in vals]
+    return [fill if _missing(v) else str(v) for v in vals]
 
 
 def _spearman(a, b) -> float:
@@ -223,6 +240,15 @@ def shap_importance(table: Table, target: str, n_repeats: int = 5, seed: int = 0
     kf = KFold(n_splits=min(5, n), shuffle=True, random_state=seed)
     oof = cross_val_predict(_model(seed, n, model_params), X, y, cv=kf)
     cv_r2 = float(r2_score(y, oof))
+    # With groups (e.g. designs): whole groups held out, i.e. prediction for an unseen group.
+    cv_r2_grouped, n_groups = None, 0
+    if table.groups is not None:
+        from sklearn.model_selection import GroupKFold
+        n_groups = len(set(table.groups))
+        if n_groups >= 2:
+            oof_g = cross_val_predict(_model(seed, n, model_params), X, y,
+                                      cv=GroupKFold(n_splits=min(5, n_groups)), groups=table.groups)
+            cv_r2_grouped = float(r2_score(y, oof_g))
 
     per_rep, sv_sum, train_r2, expected = [], None, [], []
     for r in range(max(1, n_repeats)):
@@ -262,13 +288,16 @@ def shap_importance(table: Table, target: str, n_repeats: int = 5, seed: int = 0
         rows.append(entry)
     rows.sort(key=lambda e: -e["mean_abs_shap"])
 
-    return {
+    out = {
         "target": target, "n": n, "params": params, "repeats": len(per_rep),
         "cv_r2": cv_r2, "train_r2": float(np.mean(train_r2)), "expected_value": float(np.mean(expected)),
         "importance": rows,
         "per_sample": {"ids": list(table.ids), "target": [float(v) for v in y],
                        "shap": {p: [float(v) for v in sv_mean[:, j]] for j, p in enumerate(params)}},
     }
+    if table.groups is not None:
+        out.update(n_groups=n_groups, cv_r2_grouped=cv_r2_grouped)
+    return out
 
 
 def explain_study(study, targets: Sequence[str] = DEFAULT_TARGETS, params: Optional[Sequence[str]] = None,
@@ -296,8 +325,10 @@ def _fmt_dir(e: dict) -> str:
 def to_markdown(results: Sequence[dict], title: str = "") -> str:
     out = [f"## {title}", ""] if title else []
     for r in results:
-        out += [f"### SHAP importance: {r['target']} (n = {r['n']}, surrogate CV R² = {r['cv_r2']:.2f}, "
-                f"{r['repeats']} fits)", "",
+        grouped = (f", grouped CV R² = {r['cv_r2_grouped']:.2f} over {r['n_groups']} groups"
+                   if r.get("cv_r2_grouped") is not None else "")
+        out += [f"### SHAP importance: {r['target']} (n = {r['n']}, surrogate CV R² = {r['cv_r2']:.2f}"
+                f"{grouped}, {r['repeats']} fits)", "",
                 "| parameter | mean \\|SHAP\\| | ± sd | share | direction |",
                 "|---|---|---|---|---|"]
         for e in r["importance"]:
@@ -307,6 +338,9 @@ def to_markdown(results: Sequence[dict], title: str = "") -> str:
         if r["cv_r2"] < LOW_R2:
             out += [f"> Surrogate CV R² is {r['cv_r2']:.2f} (< {LOW_R2}): the parameters explain little of "
                     f"the variation in {r['target']}, so read these importances as weak.", ""]
+        elif r.get("cv_r2_grouped") is not None and r["cv_r2_grouped"] < LOW_R2:
+            out += [f"> With whole groups held out the CV R² drops to {r['cv_r2_grouped']:.2f}: the surrogate "
+                    f"describes these groups well but does not predict {r['target']} for an unseen one.", ""]
     out += ["mean |SHAP| is in the target's units. Direction: Spearman correlation between a "
             "numeric parameter's value and its SHAP value (+ = larger values raise the target); for a "
             "categorical parameter, the category with the highest mean SHAP. A direction near 0 with a "
@@ -350,7 +384,8 @@ def write_outputs(results: Sequence[dict], out_dir: str, prefix: str = "shap", p
             ax.barh([e["param"] for e in imp], [e["mean_abs_shap"] for e in imp],
                     xerr=[e["sd"] for e in imp], color="#2a78d6")
             ax.set_xlabel(f"mean |SHAP| ({r['target']})")
-            ax.set_title(f"{r['target']}: n = {r['n']}, CV R² = {r['cv_r2']:.2f}", fontsize=9)
+            grouped = (f", grouped {r['cv_r2_grouped']:.2f}" if r.get("cv_r2_grouped") is not None else "")
+            ax.set_title(f"{r['target']}: n = {r['n']}, CV R² = {r['cv_r2']:.2f}{grouped}", fontsize=9)
             fig.tight_layout()
             p = os.path.join(out_dir, f"{prefix}_{r['target']}.png")
             fig.savefig(p, dpi=150)
@@ -372,6 +407,8 @@ def main(argv=None) -> int:
                          "a column name for --csv. Repeat for several.")
     ap.add_argument("--params", "--features", dest="params", help="comma-separated parameters to explain")
     ap.add_argument("--id-col", help="(--csv) column with the row id")
+    ap.add_argument("--group-col", help="(--csv) column that groups rows (e.g. design); adds a CV R² "
+                                        "with whole groups held out")
     ap.add_argument("--repeats", type=int, default=5, help="surrogate refits with different seeds (default 5)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="shap_out", help="output directory (default shap_out)")
@@ -382,7 +419,7 @@ def main(argv=None) -> int:
     if a.csv:
         if not a.target:
             ap.error("--csv needs --target")
-        table = table_from_csv(a.csv, a.target, params, a.id_col)
+        table = table_from_csv(a.csv, a.target, params, a.id_col, a.group_col)
         title, targets = os.path.basename(a.csv), a.target
     else:
         import optuna
