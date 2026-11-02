@@ -211,6 +211,9 @@ def prepare_benchmark(template_2d_xml: str, opts, cache_dir: str, lazagna_root: 
     from lazagna_arch_model import run_lazagna, AdvancedOptions, SeedOptions
     import copy
 
+    if isinstance(opts.benchmarks, list):
+        raise ValueError("prepare_benchmark works on one design; stage each design with "
+                         "benchmark_suites.stage_design() and prepare them one at a time")
     bench_dir = opts.benchmarks.directory.replace("{lazagna_root}", lazagna_root)
     ext = ".v" if opts.benchmarks.is_verilog else ".blif"
     srcs = sorted(glob.glob(os.path.join(bench_dir, "*" + ext)))

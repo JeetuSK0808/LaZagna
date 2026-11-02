@@ -6,6 +6,7 @@ SLURM logs: every `*.sbatch` writes `logs/<job-type>/<job-type>_<jobid>[_<task>]
 |---|---|
 | `exp/` | `experiment.sbatch` (fixed-configuration experiments) |
 | `worker/` | `worker_array.sbatch` (Optuna workers) |
+| `suite/` | `suite_study.sbatch` (multi-benchmark study: `suite_*` search workers, `report_*` report job) |
 | `characterize/` | `characterize.sbatch` |
 | `extras/`, `collect/` | `extras.sbatch`, `collect.sbatch` |
 | `build/` | `build_lazagna.sbatch` (container image build) |

@@ -19,10 +19,10 @@
 # env: WORKER_ID, WORK (default /work), LAZAGNA_ROOT (default /opt/LaZagna),
 #      LAZAGNA_CODE (host code dir, default LAZAGNA_ROOT), SEEDS (3), TRIALS_COLUMNS (35),
 #      TRIALS_SAMPLER (15), STUDIES (default "columns promote tpe nsga2 random"),
-#      COLUMNS_DESIGN ("koios/eltwise_layer"), FIDELITY ("place"), TALL (1), TARGET_UTIL (0.8),
+#      COLUMNS_DESIGN ("koios/eltwise_layer"; any "<suite>/<name>" in benchmark_suites.SUITES),
+#      FIDELITY ("place"), TALL (1), TARGET_UTIL (0.8),
 #      PROMOTE_TOP (10), PROMOTE_RANDOM (10), KEEP_RRG (unset -> per-trial RRG cleanup on)
 import os
-import shutil
 import sys
 import time
 
@@ -64,6 +64,7 @@ import optuna
 from lazagna_optuna import (SearchConfig, make_objective, _make_sampler, journal_storage,
                             baseline_signature, column_counts, autosize, sample_columns,
                             reference_columns, _run_one, sample_structured)
+from benchmark_suites import stage_design, is_verilog_entry
 
 # Stale-image guard: these features live inside the image (/opt/LaZagna). If Ismael reuses an
 # old lazagna.sif, fail loud instead of crashing cryptically mid-run.
@@ -75,22 +76,15 @@ if "study" not in inspect.signature(make_objective).parameters:
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
-def ensure_bench(name: str, src_rel: str) -> str:
-    """Single-design benchmark dir on the HOST work dir (container benchmarks/ is read-only)."""
-    bdir = os.path.join(WORK, "bench", name)
-    dst = os.path.join(bdir, os.path.basename(src_rel))
-    if not os.path.exists(dst):
-        os.makedirs(bdir, exist_ok=True)
-        src = os.path.join(ROOT, src_rel)
-        if not os.path.exists(src):
-            sys.exit(f"FATAL: benchmark source missing: {src}")
-        tmp = dst + f".w{WORKER_ID}.tmp"
-        shutil.copy(src, tmp)
-        os.replace(tmp, dst)  # atomic vs racing workers
-    return bdir
+def stage_bench(entry: str, prefix: str) -> str:
+    """Single-design benchmark dir on the HOST work dir (container benchmarks/ is read-only),
+    via stage_design(); a missing source is fatal, as before."""
+    try:
+        return stage_design(entry, ROOT, WORK, prefix=prefix)
+    except (FileNotFoundError, KeyError, ValueError) as e:
+        sys.exit(f"FATAL: {e}")
 
 
-SUITES = {"koios": "benchmarks/koios", "vtr": "benchmarks/VTR_benchmarks"}
 _COLUMNS = {}
 
 
@@ -99,12 +93,11 @@ def columns_cfg() -> SearchConfig:
     The first call may block while one worker synthesizes + packs the design."""
     if "cfg" in _COLUMNS:
         return _COLUMNS["cfg"]
-    suite, name = COLUMNS_DESIGN.split("/", 1)
     tdir = "dsp_bram_tall" if TALL else "dsp_bram"
     base = SearchConfig(
         lazagna_root=ROOT,
-        benchmark_dir=ensure_bench("cols_" + name, f"{SUITES[suite]}/{name}.v"),
-        is_verilog=True,
+        benchmark_dir=stage_bench(COLUMNS_DESIGN, "cols_"),
+        is_verilog=is_verilog_entry(COLUMNS_DESIGN),
         # cw 300 everywhere: the lab has used 300 in all prior work, so results stay
         # comparable. CW is pinned on the vpr line, so VTR never runs its own search.
         channel_width=CW, seeds=SEEDS, seed_list=SEED_LIST,

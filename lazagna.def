@@ -98,6 +98,12 @@ From: ubuntu:24.04
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip
     /opt/venv/bin/pip install --no-cache-dir -r /opt/LaZagna/requirements.txt
     /opt/venv/bin/pip install --no-cache-dir optuna    # NOT in requirements.txt (note 2)
+    # Optional analysis extras (scikit-learn + shap for lazagna_shap.py / the SHAP table in
+    # campaign/analyze_optuna.py). Not fatal: without them only the SHAP tables are skipped.
+    if [ -f /opt/LaZagna/requirements-analysis.txt ]; then
+        /opt/venv/bin/pip install --no-cache-dir -r /opt/LaZagna/requirements-analysis.txt \
+            || echo "WARNING: analysis extras did not install; SHAP tables will be skipped"
+    fi
 
     # --- Bind mountpoints for the flow's writable dirs. The campaign runs with NO overlay
     #     (the 50 GB overlay filled on the first PACE run); instead each worker job binds

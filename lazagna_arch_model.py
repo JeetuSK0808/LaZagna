@@ -725,6 +725,27 @@ class ArchitectureEntry:
 class BenchmarkOptions:
     directory: str = "{lazagna_root}/benchmarks/and2_or2"
     is_verilog: bool = False
+    # Optional: a registered suite (see benchmark_suites.SUITES), and/or only some designs of
+    # the directory. Use from_suite() rather than setting `suite` by hand.
+    suite: Optional[str] = None
+    designs: Optional[list[str]] = None
+
+    @classmethod
+    def from_suite(cls, suite: str, designs: Optional[list[str]] = None) -> "BenchmarkOptions":
+        """Every design of a registered suite, or only `designs` of it:
+        BenchmarkOptions.from_suite("vtr"), BenchmarkOptions.from_suite("mcnc", ["clma"])."""
+        from benchmark_suites import get_suite
+        s = get_suite(suite)
+        return cls(directory="{lazagna_root}/" + s.directory, is_verilog=s.is_verilog,
+                   suite=s.name, designs=list(designs) if designs else None)
+
+    def to_dict(self) -> dict:
+        d = {"directory": self.directory, "is_verilog": self.is_verilog}
+        if self.suite:
+            d["suite"] = self.suite
+        if self.designs:
+            d["designs"] = list(self.designs)
+        return d
 
 
 @dataclass
@@ -784,7 +805,8 @@ class ExperimentOptions:
     experiment_name: str = "default_experiment"
     grid: GridOptions = field(default_factory=GridOptions)
     architectures: list[ArchitectureEntry] = field(default_factory=lambda: [ArchitectureEntry()])
-    benchmarks: BenchmarkOptions = field(default_factory=BenchmarkOptions)
+    # One BenchmarkOptions, or a list of them (each entry is swept, like `architectures`).
+    benchmarks: Union[BenchmarkOptions, list[BenchmarkOptions]] = field(default_factory=BenchmarkOptions)
     placement: PlacementOptions = field(default_factory=PlacementOptions)
     seeds: SeedOptions = field(default_factory=SeedOptions)
     switch_block_3d: SwitchBlock3DOptions = field(default_factory=SwitchBlock3DOptions)
@@ -838,10 +860,8 @@ class ExperimentOptions:
                 "channel_width": self.grid.channel_width,
             },
             "architectures": architectures,
-            "benchmarks": {
-                "directory": self.benchmarks.directory,
-                "is_verilog": self.benchmarks.is_verilog,
-            },
+            "benchmarks": ([b.to_dict() for b in self.benchmarks]
+                           if isinstance(self.benchmarks, list) else self.benchmarks.to_dict()),
             "placement": {
                 "algorithm": self.placement.algorithm,
             },
