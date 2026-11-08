@@ -119,3 +119,108 @@ def test_cli_on_sqlite_and_csv(tmp_path):
                     "--out", str(tmp_path / "c"), "--no-plot"]) == 0
     meta = json.load(open(tmp_path / "c" / "pareto.json"))
     assert meta["front_ids"] == ["r1", "r2"] and meta["champion_id"] == "r2"
+
+
+# ---- vertical links as a third objective ------------------------------------------------------
+
+def test_front_with_links_matches_brute_force():
+    rng = random.Random(2)
+    pts = [(rng.gauss(0, 1), rng.gauss(0, 1), rng.choice([0.05, 0.1, 0.25, 0.5, 1.0])) for _ in range(150)]
+    front = set(lp.pareto_front_links(*zip(*pts)))
+    for i, (x, y, l) in enumerate(pts):
+        beaten = any(a >= x and b >= y and c <= l and (a, b, c) != (x, y, l) for a, b, c in pts)
+        assert (i in front) == (not beaten)
+    # fewer links keeps a point that the 2D front would drop
+    assert lp.pareto_front_links([1, 2], [1, 2], [0.1, 1.0]) == [0, 1]
+    assert lp.pareto_front([1, 2], [1, 2]) == [1]
+
+
+def test_best_and_lean_champions():
+    pts = _pts([(6, 6), (5, 5), (4, 3), (1, 1), (6, 6)], links=[1.0, 0.5, 0.1, 0.05, 0.5])
+    res = lp.analyze_links(pts)
+    assert res["front"] == [2, 3, 4]                     # 0 is beaten by 4 (same gains, fewer links)
+    assert res["champion"] == 4 and res["lean"] == 2     # lean: best of the points with links <= 0.1
+    assert lp.analyze_links(pts, max_links=0.01)["lean"] is None
+    assert lp.analyze_links(pts, max_links=1.0)["lean"] == 4       # the best champion is also lean
+    assert lp.analyze_links(pts, weights=(0, 1))["champion"] == 4
+    assert lp.analyze_links([], max_links=0.1)["champion"] is None
+
+
+def _links_study(n=24, seed=4):
+    optuna = pytest.importorskip("optuna")
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    rng = random.Random(seed)
+
+    def obj(t):
+        a = t.suggest_float("a", 0, 1)
+        links = t.suggest_categorical("connectivity", [0.25, 0.5, 1.0]) * t.suggest_categorical(
+            "vertical_connectivity", [0.05, 0.1, 1.0])
+        cpd, wl = 10 * a + 3 * links + rng.gauss(0, 1), 10 * (1 - a) + 4 * links + rng.gauss(0, 1)
+        t.set_user_attr("cpd_impr_pct", cpd)
+        t.set_user_attr("wl_impr_pct", wl)
+        t.set_user_attr("link_fraction", links)
+        return -cpd, -wl, links
+    st = optuna.create_study(directions=["minimize"] * 3, sampler=optuna.samplers.RandomSampler(seed=seed))
+    st.optimize(obj, n_trials=n)
+    return st
+
+
+def test_study_with_links_objective(tmp_path):
+    st = _links_study()
+    pts, res = lp.study_analysis(st)
+    assert res["objectives"] == 3 and res["max_links"] == 0.1 and len(pts) == 24
+    front = set(lp.pareto_front_links([p["x"] for p in pts], [p["y"] for p in pts],
+                                      [p["link_fraction"] for p in pts]))
+    assert set(res["front"]) == front
+    best = max(front, key=lambda i: pts[i]["x"] + pts[i]["y"])
+    assert res["champion"] == best
+    lean_pool = [i for i in front if pts[i]["link_fraction"] <= 0.1]
+    assert res["lean"] == max(lean_pool, key=lambda i: pts[i]["x"] + pts[i]["y"])
+    assert lp.study_analysis(st, max_links=0.25)[1]["max_links"] == 0.25
+    paths = lp.write_outputs(pts, res, str(tmp_path), title="s", plot_png=False)
+    assert sorted(os.path.basename(p) for p in paths) == ["pareto.csv", "pareto.json", "pareto.md"]
+    rows = list(csv.DictReader(open(tmp_path / "pareto.csv")))
+    assert list(rows[0])[:7] == ["id", "cpd_gain_pct", "wl_gain_pct", "link_fraction", "on_front", "champion", "lean"]
+    assert sum(int(r["lean"]) for r in rows) == 1 and sum(int(r["champion"]) for r in rows) == 1
+    meta = json.load(open(tmp_path / "pareto.json"))
+    assert meta["lean_id"] == pts[res["lean"]]["id"] and meta["champion_id"] == pts[best]["id"]
+    md = open(tmp_path / "pareto.md").read()
+    assert "| trial | links | CPD gain % | WL gain % | params |" in md
+    assert "**(best)**" in md and "**(lean)**" in md and "links <= 0.1" in md
+    shown = [float(l.split("|")[2]) for l in md.splitlines() if l.startswith("| ") and l[2].isdigit()]
+    assert len(shown) == len(front) and shown == sorted(shown)          # sorted by links
+
+
+def test_links_from_the_objective_value_when_the_attr_is_missing():
+    optuna = pytest.importorskip("optuna")
+    st = optuna.create_study(directions=["minimize"] * 3)
+    for x, y, l in ((1, 2, 0.5), (2, 1, 0.05)):
+        t = st.ask()
+        t.set_user_attr("cpd_impr_pct", x)
+        t.set_user_attr("wl_impr_pct", y)
+        st.tell(t, (-x, -y, l))
+    pts, res = lp.study_analysis(st)
+    assert [p["link_fraction"] for p in pts] == [0.5, 0.05] and res["lean"] == 1
+
+
+def test_plot_links(tmp_path):
+    pytest.importorskip("matplotlib")
+    st = _links_study()
+    pts, res = lp.study_analysis(st)
+    assert lp.plot(pts, res, str(tmp_path / "p.png"), title="t")
+    assert os.path.getsize(tmp_path / "p.png") > 1000
+
+
+def test_cli_links_objective(tmp_path):
+    p = tmp_path / "runs.csv"
+    with open(p, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["run", "cpd_gain", "wl_gain", "link_fraction"])
+        w.writerows([["r1", 5, 5, 1.0], ["r2", 4, 4, 0.1], ["r3", 1, 1, 0.05], ["r4", 0, 0, ""]])
+    assert lp.main(["--csv", str(p), "--x", "cpd_gain", "--y", "wl_gain", "--id-col", "run", "--links-objective",
+                    "--out", str(tmp_path / "o"), "--no-plot"]) == 0
+    meta = json.load(open(tmp_path / "o" / "pareto.json"))
+    assert meta["front_ids"] == ["r1", "r2", "r3"] and meta["champion_id"] == "r1" and meta["lean_id"] == "r2"
+    assert lp.main(["--csv", str(p), "--x", "cpd_gain", "--y", "wl_gain", "--id-col", "run", "--links-objective",
+                    "--max-links", "0.05", "--out", str(tmp_path / "o2"), "--no-plot"]) == 0
+    assert json.load(open(tmp_path / "o2" / "pareto.json"))["lean_id"] == "r3"
