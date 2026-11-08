@@ -147,6 +147,9 @@ for log in sorted(glob.glob(os.path.join(WORK, "journal", "*.log"))):
         tasks.append({"id": f"custom__{design}__t{r['n']}", "kind": "custom", "design": entry, "seeds": 5,
                       "structured": {p: r[p] for p in PARAMS}})
 
+if not summary and suite_studies:   # only multi-benchmark studies: say where their reports are
+    md += ["No single-design studies in this journal; see "
+           + ", ".join(f"analysis/{n}/report.md" for n, _ in suite_studies), ""]
 json.dump(summary, open(os.path.join(WORK, "optuna_summary.json"), "w"), indent=1)
 open(os.path.join(WORK, "optuna_summary.md"), "w").write("\n".join(md))
 open(os.path.join(WORK, "tasks_validate.jsonl"), "w").write("\n".join(json.dumps(t) for t in tasks) + "\n")
