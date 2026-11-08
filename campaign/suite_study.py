@@ -17,9 +17,15 @@
 #      TALL (1), TARGET_UTIL (0.8)
 #      CONN_CHOICES  3D switch-block connectivity values to sample, e.g. "0.25 0.5 1.0"
 #                    (default: "1.0", i.e. fixed; in connectivity mode 0.1 ... 1.0)
+#      VCONN_CHOICES share of each 3D switch block's channels that cross, e.g. "0.1 0.5 1.0"
+#                    (default "1.0", fixed; structured and layout modes)
 #      DELAY         inter-layer delay ratio: one value (default 0.739, fixed) or "lo,hi"
 #      WEIGHTS       "" (default: two objectives, a Pareto front) or "w_cpd,w_wl" (one
 #                    weighted objective); LINK_PENALTY: % points per unit of vertical links (0)
+#      LINKS_OBJECTIVE  1: vertical links (link_fraction) as a third objective (default 0)
+#      ANCHORS       1: the known layouts (lazagna_optuna.ANCHORS) as the first trials,
+#                    queued once per study (structured mode; default 0)
+#      NSGA_POP      population of the nsga2 / nsga3 samplers (default: Optuna's, 50)
 #      WORKER_ID, WORK (/work), LAZAGNA_ROOT (/opt/LaZagna), LAZAGNA_CODE, KEEP_RRG
 import json
 import os
@@ -37,6 +43,13 @@ def _list(name, default):
     return [v for v in re.split(r"[,\s]+", os.environ.get(name, default)) if v]
 
 
+def _flag(name):
+    v = os.environ.get(name, "").strip()
+    if v not in ("", "0", "1"):
+        sys.exit(f"FATAL: {name} must be 0 or 1, not '{v}'")
+    return v == "1"
+
+
 DESIGNS = _list("DESIGNS", "koios/attention_layer vtr/stereovision1 koios/tpu_like.small.os")
 SEARCH_MODE = os.environ.get("SEARCH_MODE", "structured")
 SAMPLER = os.environ.get("SAMPLER", "tpe")
@@ -52,6 +65,10 @@ _delay = [float(v) for v in _list("DELAY", "0.739")]
 DELAY_RANGE = (_delay[0], _delay[-1])
 WEIGHTS = tuple(float(v) for v in _list("WEIGHTS", ""))
 LINK_PENALTY = float(os.environ.get("LINK_PENALTY", "0") or 0)
+VCONN_CHOICES = tuple(float(v) for v in _list("VCONN_CHOICES", ""))
+LINKS_OBJECTIVE = _flag("LINKS_OBJECTIVE")
+ANCHORS = _flag("ANCHORS")
+NSGA_POP = int(os.environ["NSGA_POP"]) if os.environ.get("NSGA_POP", "").strip() else None
 KEEP_RRG = bool(os.environ.get("KEEP_RRG"))
 
 os.chdir(ROOT)
@@ -60,7 +77,7 @@ sys.path[:0] = [CODE, ROOT]   # host code first (see campaign/binds.sh)
 import optuna
 from lazagna_optuna import (SearchConfig, make_suite_objective, design_configs, _make_sampler,
                             journal_storage, n_objectives, enqueue_named_layouts, prepare,
-                            column_counts)
+                            column_counts, enqueue_anchors)
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -80,6 +97,8 @@ def config() -> SearchConfig:
         connectivity_choices=CONN_CHOICES or (1.0,), delay_ratio_range=DELAY_RANGE,
         fine_connectivity_choices=CONN_CHOICES or SearchConfig.fine_connectivity_choices,
         objective_weights=WEIGHTS, link_penalty=LINK_PENALTY,
+        vertical_connectivity_choices=VCONN_CHOICES or (1.0,), links_objective=LINKS_OBJECTIVE,
+        anchors=ANCHORS, nsga_population=NSGA_POP,
         template_path=f"arch_files/templates/{tdir}/vtr_arch_dsp_bram.xml",
         template_2d_path=f"arch_files/templates/{tdir}/vtr_2d_arch_dsp_bram.xml",
         fidelity=FIDELITY, prep_dir="/prep", stage_dir=WORK, target_util=TARGET_UTIL,
@@ -88,13 +107,23 @@ def config() -> SearchConfig:
 
 
 def settings(cfg: SearchConfig, designs) -> dict:
-    return {"designs": [e for e, _ in designs], "search_mode": cfg.search_mode, "sampler": cfg.sampler,
-            "seeds": len(cfg.seed_list), "fidelity": cfg.fidelity, "channel_width": cfg.channel_width,
-            "tall": TALL, "target_util": cfg.target_util, "arch_type": cfg.arch_type,
-            "connectivity_choices": list(cfg.fine_connectivity_choices if cfg.search_mode == "connectivity"
-                                         else cfg.connectivity_choices),
-            "delay_ratio_range": list(cfg.delay_ratio_range),
-            "objective_weights": list(cfg.objective_weights), "link_penalty": cfg.link_penalty}
+    s = {"designs": [e for e, _ in designs], "search_mode": cfg.search_mode, "sampler": cfg.sampler,
+         "seeds": len(cfg.seed_list), "fidelity": cfg.fidelity, "channel_width": cfg.channel_width,
+         "tall": TALL, "target_util": cfg.target_util, "arch_type": cfg.arch_type,
+         "connectivity_choices": list(cfg.fine_connectivity_choices if cfg.search_mode == "connectivity"
+                                      else cfg.connectivity_choices),
+         "delay_ratio_range": list(cfg.delay_ratio_range),
+         "objective_weights": list(cfg.objective_weights), "link_penalty": cfg.link_penalty}
+    # Newer options are recorded only when set, so a default study's attrs are as before.
+    if tuple(cfg.vertical_connectivity_choices) != (1.0,):
+        s["vertical_connectivity_choices"] = list(cfg.vertical_connectivity_choices)
+    if cfg.links_objective:
+        s["links_objective"] = True
+    if cfg.anchors:
+        s["anchors"] = True
+    if cfg.nsga_population is not None:
+        s["nsga_population"] = cfg.nsga_population
+    return s
 
 
 def open_study(cfg: SearchConfig, designs) -> optuna.Study:
@@ -138,6 +167,29 @@ def clean_rrg() -> None:
                     pass
 
 
+def queue_anchors_once(study: optuna.Study, cfg: SearchConfig) -> None:
+    """The anchors go in exactly once per study, however many workers share it and in whatever
+    order SLURM starts them: the first worker to create journal/<study>.anchors (O_EXCL, atomic
+    on the shared filesystem, as for the reference lock files) queues them before it runs a
+    trial; every other worker, and any later restart, finds the file and queues nothing.
+    enqueue_anchors() itself also skips a study that already has seeded trials."""
+    lock = os.path.join(WORK, "journal", f"{STUDY}.anchors")
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return
+    try:
+        names = enqueue_anchors(study, cfg)
+    except BaseException:       # e.g. a setting the anchors refuse: the next worker gets the same error
+        os.close(fd)
+        os.remove(lock)
+        raise
+    with os.fdopen(fd, "w") as f:
+        f.write(" ".join(names) + "\n")
+    print(f"[w{WORKER_ID}] queued anchors: {', '.join(names) or 'none (no anchor fits the search space)'}",
+          flush=True)
+
+
 def contribute(study: optuna.Study, objective, target: int) -> None:
     """Trials until `target` are complete (or running) over all workers. Pruned and failed
     trials don't use up the budget, but attempts are capped at 3x target."""
@@ -158,9 +210,11 @@ def main() -> None:
     os.makedirs(os.path.join(WORK, "journal"), exist_ok=True)
     time.sleep(WORKER_ID * 3)   # stagger startup so the workers don't hit the locks at once
     cfg = config()
+    extra = [(k, v) for k, v in (("vconn_choices", VCONN_CHOICES), ("links_objective", LINKS_OBJECTIVE),
+                                 ("anchors", ANCHORS), ("nsga_pop", NSGA_POP)) if v]
     print(f"[w{WORKER_ID}] study {STUDY}: designs={DESIGNS} mode={SEARCH_MODE} sampler={SAMPLER} "
           f"trials={TRIALS} seeds={SEEDS} fidelity={FIDELITY} weights={WEIGHTS or 'pareto'} "
-          f"link_penalty={LINK_PENALTY}", flush=True)
+          f"link_penalty={LINK_PENALTY}" + "".join(f" {k}={v}" for k, v in extra), flush=True)
     # Stages, synthesizes + packs (once, shared /prep cache) and sizes every design.
     designs = design_configs(cfg)
     for e, sub in designs:
@@ -173,6 +227,8 @@ def main() -> None:
         if (SEARCH_MODE == "layout" and not study.get_trials(deepcopy=False)
                 and 1.0 in cfg.connectivity_choices and DELAY_RANGE[0] <= 0.739 <= DELAY_RANGE[1]):
             enqueue_named_layouts(study, cfg)
+    if ANCHORS:
+        queue_anchors_once(study, cfg)
     objective = make_suite_objective(cfg, designs=designs,
                                      baseline_dir=os.path.join(WORK, "journal", "baselines"))
     contribute(study, objective, TRIALS)
