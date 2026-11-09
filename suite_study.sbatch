@@ -48,7 +48,8 @@ if [ "$PHASE" = search ]; then
   export APPTAINERENV_WORKER_ID="$ID"
   # APPTAINERENV_* survives --cleanenv (values with spaces/commas, e.g. DESIGNS, stay intact).
   for v in DESIGNS SEARCH_MODE SAMPLER TRIALS STUDY SEEDS FIDELITY CW TALL TARGET_UTIL \
-           CONN_CHOICES DELAY WEIGHTS LINK_PENALTY KEEP_RRG; do
+           CONN_CHOICES DELAY WEIGHTS LINK_PENALTY KEEP_RRG \
+           VCONN_CHOICES LINKS_OBJECTIVE ANCHORS NSGA_POP; do
     if [ -n "${!v:-}" ]; then export "APPTAINERENV_$v=${!v}"; fi
   done
   # The qmc sampler draws its Sobol sequence with scipy, which the image does not ship.
@@ -76,6 +77,8 @@ EXTRAS="${EXTRAS_DIR:-$CAMPAIGN/campaign_work/pyextras}"
 mkdir -p "$EXTRAS"
 BINDS+=(-B "$EXTRAS:/pyextras")
 export APPTAINERENV_PYTHONPATH="/code:/pyextras"
+# the "lean" champion's link budget (studies with LINKS_OBJECTIVE=1)
+if [ -n "${CHAMPION_MAX_LINKS:-}" ]; then export APPTAINERENV_CHAMPION_MAX_LINKS="$CHAMPION_MAX_LINKS"; fi
 APP=(apptainer exec --no-home --cleanenv "${BINDS[@]}" "$SIF")
 echo "SUITE REPORT START $(date -Is)  work=$WORK_ROOT"
 if ! "${APP[@]}" python3 -c "import sklearn, shap, matplotlib" 2>/dev/null; then

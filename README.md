@@ -537,6 +537,12 @@ LaZagna/
 
 **Priorities.** By default a search has two objectives, CPD gain and wirelength gain, and finds their Pareto front. `objective_weights=(w_cpd, w_wl)` turns them into one weighted objective, e.g. `(1, 0)` for CPD only. `link_penalty=p` charges vertical links: `p` percentage points come off each gain at full 3D connectivity, in proportion to the share of switch blocks with vertical links. Both are off by default, and then the objective is unchanged.
 
+**Vertical links.** In the multi-benchmark search, `connectivity_choices` is the share of switch blocks that are 3D and `vertical_connectivity_choices` the share of each 3D switch block's channels that cross the layers (structured and layout modes). With more than one value, each is sampled. A trial's vertical links are their product, `link_fraction` (1 = full 3D). `links_objective=True` makes the links a third objective, so the search finds the front of CPD gain, WL gain and links; it cannot be combined with `objective_weights` or `link_penalty`. Such a study gets two champions: **best**, the front point with the highest CPD + WL gain, and **lean**, the same among front points with links at most `CHAMPION_MAX_LINKS` (default 0.1). Its report shows the front sorted by links and plots WL and CPD gain against links. `nsga_population` sets the population of the `nsga2` and `nsga3` samplers (default 50). They draw their first generation at random, so with fewer trials than the population they are a random search. All of these are off by default.
+
+**Anchors.** `anchors=True` (structured mode) queues known layouts as the first trials, once per study, however many workers share it: `even_split`, `split_types` (DSP on layer 0, BRAM on layer 1), `split_rev`, `hb_top`, `hb_one_layer`, and `recommended` (split_types with 10% of the channels crossing, the study's recommended architecture; only when 0.1 is a vertical-connectivity choice). `split_types` and `recommended` have exactly the columns of the study's runs, on every study device. The others keep the per-layer column counts of the study's layouts but not their positions, which the structured parameters cannot express (`lazagna_optuna.ANCHORS` explains why). `even_split` is therefore not the reference layout: its gain shows the seed noise, not exactly 0.
+
+**Placement vs routing.** Routed multi-benchmark runs also keep VPR's placement estimates of the same runs, for every trial and reference. The report compares them with the routed gains: Spearman ρ, the mean offset, and the trials whose rank changes most. This shows how far a cheaper `FIDELITY=place` search can be trusted on these designs.
+
 **Which parameters matter.** `lazagna_shap.py` explains a finished study. It fits a gradient-boosted tree surrogate from the trial parameters to a target (default `cpd_impr_pct` and `wl_impr_pct`), then reports each parameter's mean |SHAP| value in the target's units, its share, its spread over repeated fits, and its direction. Every table also carries the surrogate's cross-validated R², so a weak fit is visible. For a CSV of runs over several designs, `--group-col design` adds a second R² with whole designs held out. It needs `pip install -r requirements-analysis.txt`.
 
 ```bash
@@ -547,7 +553,7 @@ python3 lazagna_shap.py --csv runs.csv --target cpd_gain --features cluster,stag
 
 For the fixed-configuration study, `campaign/shap_study.py` builds one table of every routed run (`docs/study/study_runs.csv`) and its SHAP view, written up in [`docs/study/shap_study.md`](docs/study/shap_study.md).
 
-**Pareto fronts.** `lazagna_pareto.py` writes the Pareto front of a study (CPD gain vs WL gain) as a CSV, a table and a plot, with the champion marked. The champion is the front point with the highest `w_cpd` x CPD gain + `w_wl` x WL gain, with weights (1, 1) unless the study was run with others.
+**Pareto fronts.** `lazagna_pareto.py` writes the Pareto front of a study (CPD gain vs WL gain) as a CSV, a table and a plot, with the champion marked. The champion is the front point with the highest `w_cpd` x CPD gain + `w_wl` x WL gain, with weights (1, 1) unless the study was run with others. For a study with links as a third objective, it uses the three-objective front and marks the best and lean champions (`--max-links` sets the lean budget).
 
 ```bash
 python3 lazagna_pareto.py --journal campaign_work/<run>/journal/<study>.log --study <study> --out pareto_out
@@ -568,9 +574,10 @@ That is the whole setup: the Python comes from the checkout through the containe
 
 ```
 campaign_work/<study>_<time>/<study>_<time>_results.tar.gz
-  analysis/<study>/report.md      Pareto front, champion (per design), Spearman, SHAP, top trials
+  analysis/<study>/report.md      Pareto front, champion (per design), Spearman, SHAP, top trials,
+                                  placement vs routing (routed runs)
   analysis/<study>/pareto.{png,csv,md}, shap*.{png,csv,md}, trials.csv
-  analysis/<study>/tasks_champion.jsonl   5-seed check of the champion on every design
+  analysis/<study>/tasks_champion.jsonl   5-seed check of the champion(s) on every design
   journal/<study>.log             the Optuna study (every trial and its per-design results)
   designs.json, suite_study.env, logs/
 ```
@@ -583,6 +590,15 @@ DESIGNS="koios/eltwise_layer vtr/stereovision1 mcnc/clma" SAMPLER=nsga2 TRIALS=6
 WEIGHTS=0.7,0.3 LINK_PENALTY=2 CONN_CHOICES="0.25 0.5 1.0" bash campaign/suite_study.sh
 DRY_RUN=1 bash campaign/suite_study.sh      # print the sbatch commands only
 ```
+
+The recommended next run is a routed search over hard-block layout and vertical links. It runs on three designs where layout matters (type-dedicated layers gained +2.9 to +5.8% WL on them at 10 seeds in the study) and starts from the known layouts:
+
+```bash
+DESIGNS="koios/tpu_like.small.ws vtr/mkDelayWorker32B vtr/stereovision2" TRIALS=64 ANCHORS=1 LINKS_OBJECTIVE=1 \
+    CONN_CHOICES="0.25 0.5 1.0" VCONN_CHOICES="0.05 0.1 0.25 0.5 1.0" bash campaign/suite_study.sh
+```
+
+The study's 10-seed layout confirmations for these designs (`docs/study/tables.md`) and its recommended-architecture runs are a direct check on the anchors. Settings: `VCONN_CHOICES` (vertical connectivity values), `LINKS_OBJECTIVE=1` (links as a third objective), `CHAMPION_MAX_LINKS` (the lean champion's budget, default 0.1), `ANCHORS=1`, `NSGA_POP` (NSGA population).
 
 The header of `campaign/suite_study.sh` lists every setting. SHAP needs scikit-learn and shap. If the image lacks them, the report job installs them once into `campaign_work/pyextras`, outside the image. If that fails, or with `INSTALL_EXTRAS=0`, the report is written without the SHAP tables. To check the champion at 5 seeds, run its task file with `experiment.sbatch`, e.g. in the study dir: `sbatch -A <acct> --array=0-5 --export=ALL,WORK_ROOT=$PWD/campaign_work/study,TASKS=$PWD/campaign_work/study/tasks/tasks_champion.jsonl experiment.sbatch` (copy `tasks_champion.jsonl` to `campaign_work/study/tasks/` first; set `--array` to the number of lines minus one).
 

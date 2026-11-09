@@ -134,3 +134,154 @@ def test_launcher_refuses_bad_settings(tmp_path, bad):
 @pytest.mark.parametrize("script", ["campaign/suite_study.sh", "suite_study.sbatch", "submit_campaign.sh"])
 def test_shell_syntax(script):
     assert subprocess.run(["bash", "-n", os.path.join(REPO, script)]).returncode == 0
+
+
+# ---- vertical links, links objective, anchors ---------------------------------------------------
+
+TRIO = "koios/tpu_like.small.ws vtr/mkDelayWorker32B vtr/stereovision2"
+RECOMMENDED = dict(DESIGNS=TRIO, TRIALS="64", ANCHORS="1", LINKS_OBJECTIVE="1", CONN_CHOICES="0.25 0.5 1.0",
+                   VCONN_CHOICES="0.05 0.1 0.25 0.5 1.0")
+ANCHOR_NAMES = ["even_split", "split_types", "split_rev", "hb_top", "hb_one_layer", "recommended"]
+# the same worker, with every sleep (startup stagger, reference polls) cut short
+DRIVER_FAST = "import time as _t\n_s = _t.sleep\n_t.sleep = lambda s: _s(min(s, 0.05))\n" + DRIVER
+# ... and each enqueue_trial 0.3 s slow, so racing workers all look for queued anchors before the
+# first one lands (with only the seeded_from check, every worker would then queue them all)
+DRIVER_RACE = DRIVER_FAST.replace(
+    "import lazagna_optuna as lo\n",
+    "import optuna as _o\n_enq = _o.study.Study.enqueue_trial\n"
+    "def _slow(self, *a, **k):\n    _s(0.3)\n    return _enq(self, *a, **k)\n"
+    "_o.study.Study.enqueue_trial = _slow\nimport lazagna_optuna as lo\n", 1)
+
+
+def add_trio(fake_root):
+    for rel in ("koios/tpu_like.small.ws.v", "VTR_benchmarks/mkDelayWorker32B.v", "VTR_benchmarks/stereovision2.v"):
+        open(os.path.join(fake_root, "benchmarks", rel), "w").write(f"// {rel}\n")
+
+
+def test_default_study_records_what_it_did_before(env):
+    run_worker(env)
+    st = load(env)
+    assert set(st.user_attrs) == {"designs", "search_mode", "sampler", "seeds", "fidelity", "channel_width", "tall",
+                                  "target_util", "arch_type", "connectivity_choices", "delay_ratio_range",
+                                  "objective_weights", "link_penalty"}
+    assert len(st.directions) == 2 and all("vertical_connectivity" not in t.params for t in st.trials)
+    assert not [t for t in st.trials if "seeded_from" in t.user_attrs]
+    assert not os.path.exists(os.path.join(env["WORK"], "journal", "s1.anchors"))
+
+
+def test_recommended_settings(env, fake_root):
+    add_trio(fake_root)
+    out = run_worker(dict(env, **dict(RECOMMENDED, TRIALS="9", SAMPLER="tpe")))
+    assert "queued anchors: " + ", ".join(ANCHOR_NAMES) in out
+    st = load(env)
+    assert len(st.directions) == 3
+    ua = st.user_attrs
+    assert ua["designs"] == TRIO.split() and ua["links_objective"] is True and ua["anchors"] is True
+    assert ua["vertical_connectivity_choices"] == [0.05, 0.1, 0.25, 0.5, 1.0]
+    assert ua["connectivity_choices"] == [0.25, 0.5, 1.0]
+    assert [t.user_attrs.get("seeded_from") for t in st.trials] == ANCHOR_NAMES + [None] * 3
+    for t in st.trials:
+        assert t.state.name == "COMPLETE"
+        links = t.params["connectivity"] * t.params["vertical_connectivity"]
+        assert t.user_attrs["link_fraction"] == pytest.approx(links) and t.values[2] == pytest.approx(links)
+    assert st.trials[5].params["vertical_connectivity"] == 0.1 and st.trials[1].params["stagger"] == 0.501
+    res = subprocess.run([sys.executable, os.path.join(REPO, "campaign", "analyze_optuna.py")], env=env,
+                         capture_output=True, text=True, cwd=REPO)
+    assert res.returncode == 0, res.stderr[-3000:]
+    rep = open(os.path.join(env["WORK"], "analysis", "s1", "report.md")).read()
+    assert "three objectives" in rep and '## Champion "best"' in rep and '## Champion "lean"' in rep
+    assert "Anchors (known layouts queued first): even_split = trial 0" in rep
+
+
+def test_anchors_queued_once_by_racing_workers(env):
+    """Four workers that start at the same moment (same WORKER_ID, so no startup stagger) share
+    one study: each anchor is queued exactly once, and a restarted worker queues nothing."""
+    assert DRIVER_RACE != DRIVER_FAST
+    e = dict(env, ANCHORS="1", TRIALS="12", CONN_CHOICES="0.5 1.0", VCONN_CHOICES="0.1 1.0")
+    procs = [subprocess.Popen([sys.executable, "-c", DRIVER_RACE], env=e, cwd=REPO,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(4)]
+    outs = [p.communicate(timeout=600) for p in procs]
+    assert all(p.returncode == 0 for p in procs), [o[1][-2000:] for o in outs]
+    assert sum(o[0].count("queued anchors:") for o in outs) == 1
+    seeded = [t.user_attrs["seeded_from"] for t in load(env).trials if "seeded_from" in t.user_attrs]
+    assert sorted(seeded) == sorted(ANCHOR_NAMES)
+    assert open(os.path.join(env["WORK"], "journal", "s1.anchors")).read().split() == ANCHOR_NAMES
+    out = run_worker(dict(e, TRIALS="14"))                           # restart with a bigger budget
+    assert "queued anchors" not in out
+    st = load(env)
+    assert sorted(t.user_attrs["seeded_from"] for t in st.trials if "seeded_from" in t.user_attrs) == \
+        sorted(ANCHOR_NAMES)
+    assert sum(1 for t in st.trials if t.state.name == "COMPLETE") >= 14
+
+
+def test_nsga_population_and_vertical_links_reach_the_study(env):
+    run_worker(dict(env, SAMPLER="nsga2", NSGA_POP="4", TRIALS="6", VCONN_CHOICES="0.1 1.0"))
+    st = load(env)
+    assert st.user_attrs["nsga_population"] == 4 and st.user_attrs["vertical_connectivity_choices"] == [0.1, 1.0]
+    assert all(t.params["vertical_connectivity"] in (0.1, 1.0) for t in st.trials)
+
+
+def test_launcher_dry_run_recommended(tmp_path):
+    r = _launch(tmp_path, **RECOMMENDED)
+    assert r.returncode == 0, r.stdout + r.stderr
+    cmds = [l for l in r.stderr.splitlines() if l.startswith("sbatch ")]
+    search = next(c for c in cmds if "PHASE=search" in c)
+    report = next(c for c in cmds if "PHASE=report" in c)
+    assert "--array=0-7" in search and "-A gts-DRYRUN" in search and search.endswith("suite_study.sbatch")
+    assert "--dependency=afterany:" in report and "SEARCH_JOB=" in report and report.endswith("suite_study.sbatch")
+    envf = tmp_path / "w" / "suite_study.env"
+    got = subprocess.run(["bash", "-c", f". '{envf}'; echo \"$DESIGNS|$TRIALS|$ANCHORS|$LINKS_OBJECTIVE|$CONN_CHOICES"
+                                        f"|$VCONN_CHOICES|${{FIDELITY:-route}}\""],
+                         capture_output=True, text=True).stdout.strip()
+    assert got == f"{TRIO}|64|1|1|0.25 0.5 1.0|0.05 0.1 0.25 0.5 1.0|route"
+    assert "note:" not in r.stdout
+
+
+@pytest.mark.parametrize("bad", [dict(LINKS_OBJECTIVE="1", WEIGHTS="0.7,0.3"), dict(LINKS_OBJECTIVE="1", LINK_PENALTY="2"),
+                                 dict(LINKS_OBJECTIVE="yes"), dict(ANCHORS="2"), dict(ANCHORS="1", SEARCH_MODE="layout"),
+                                 dict(VCONN_CHOICES="0 1"), dict(VCONN_CHOICES="0.5,2"), dict(CONN_CHOICES="half"),
+                                 dict(VCONN_CHOICES="0.5", SEARCH_MODE="connectivity"), dict(NSGA_POP="1"),
+                                 dict(NSGA_POP="ten"), dict(CHAMPION_MAX_LINKS="-0.1"), dict(LINK_PENALTY="a lot"),
+                                 dict(TRIALS="0")])
+def test_launcher_refuses_bad_link_settings(tmp_path, bad):
+    r = _launch(tmp_path, **bad)
+    assert r.returncode != 0 and not os.path.exists(tmp_path / "w"), r.stdout
+
+
+def test_launcher_notes(tmp_path):
+    r = _launch(tmp_path, LINKS_OBJECTIVE="1", LINK_PENALTY="0")
+    assert r.returncode == 0 and "every trial has the same links" in r.stdout
+    r = _launch(tmp_path, SAMPLER="nsga2", TRIALS="40")
+    assert r.returncode == 0 and "samples at random throughout" in r.stdout
+
+
+def test_sbatch_passes_the_settings_into_the_container(tmp_path):
+    """suite_study.sbatch, both phases, with a stand-in apptainer that records what it is given."""
+    camp = tmp_path / "campaign_dir"
+    camp.mkdir()
+    for d in ("campaign", "arch_files"):
+        os.symlink(os.path.join(REPO, d), camp / d)
+    (camp / "lazagna.sif").write_text("")
+    (camp / "logs" / "suite").mkdir(parents=True)
+    stub = tmp_path / "bin" / "apptainer"
+    stub.parent.mkdir()
+    stub.write_text('#!/bin/bash\n{ echo "CALL $*"; env | grep "^APPTAINERENV_" | sort; } >> "$STUB_LOG"\n')
+    stub.chmod(0o755)
+    r = _launch(tmp_path, CHAMPION_MAX_LINKS="0.2", NSGA_POP="16", SAMPLER="nsga2", **RECOMMENDED)
+    assert r.returncode == 0, r.stdout + r.stderr
+    log = tmp_path / "stub.log"
+    base = dict(os.environ, PATH=f"{stub.parent}:{os.environ['PATH']}", CAMPAIGN=str(camp),
+                WORK_ROOT=str(tmp_path / "w"), STUB_LOG=str(log), SLURM_ARRAY_TASK_ID="3")
+    for phase in ("search", "report"):
+        p = subprocess.run(["bash", os.path.join(REPO, "suite_study.sbatch")], env=dict(base, PHASE=phase),
+                           capture_output=True, text=True, cwd=str(camp))
+        assert p.returncode == 0, p.stdout + p.stderr
+    calls = log.read_text().split("CALL ")
+    worker = next(c for c in calls if "/campaign/suite_study.py" in c)
+    for line in ("APPTAINERENV_VCONN_CHOICES=0.05 0.1 0.25 0.5 1.0", "APPTAINERENV_LINKS_OBJECTIVE=1",
+                 "APPTAINERENV_ANCHORS=1", "APPTAINERENV_NSGA_POP=16", "APPTAINERENV_TRIALS=64",
+                 "APPTAINERENV_CONN_CHOICES=0.25 0.5 1.0", f"APPTAINERENV_DESIGNS={TRIO}", "APPTAINERENV_WORKER_ID=3"):
+        assert line in worker.splitlines(), line
+    analysis = next(c for c in calls if "/campaign/analyze_optuna.py" in c)
+    assert "APPTAINERENV_CHAMPION_MAX_LINKS=0.2" in analysis.splitlines()
+    assert os.path.exists(tmp_path / "w" / "w_results.tar.gz")

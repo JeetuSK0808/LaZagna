@@ -93,3 +93,37 @@ def test_experiment_custom_structured_frac(fake_root, tmp_path):
     assert frac["columns"] == out["want"]
     assert (frac["conn"], frac["delay"], frac["vconn"], frac["loc"]) == (0.5, 0.9, 1.0, "repeated_interval")
     assert (old["conn"], old["delay"], old["vconn"], old["loc"]) == (1.0, 0.739, 1.0, "repeated_interval")
+
+
+EXPERIMENT_CHAMPION = r"""
+import dataclasses, json, os, sys
+sys.path.insert(0, os.path.join(os.environ["LAZAGNA_CODE"], "campaign"))
+import experiment
+import lazagna_optuna as lo
+calls = []
+experiment.autosize = lambda cfg: (dataclasses.replace(cfg, width=62, height=50, width_2d=71, height_2d=86), {})
+def fake(cfg, spec, name, arch, conn, delay, **k):
+    calls.append({"columns": spec.columns, "conn": conn, "delay": delay, "vconn": k.get("vertical_connectivity"),
+                  "seeds": list(cfg.seed_list)})
+    return (1e-8, 1e3), None
+experiment._run_one = fake
+task = json.loads(os.environ["TASK"])
+experiment.run(task)
+cfg = dataclasses.replace(lo.SearchConfig(lazagna_root="/x", benchmark_dir=""), width=62, height=50)
+print(json.dumps({"calls": calls, "want": lo.structured_from_fractions(cfg, task["structured_frac"]).columns}))
+"""
+
+
+def test_experiment_runs_a_lean_champion_task(fake_root, tmp_path):
+    """A tasks_champion.jsonl line of a study with sampled vertical links (vconn) runs with that
+    vertical connectivity and connectivity."""
+    task = {"id": "lean__s__sha", "design": "vtr/sha", "seeds": 5, "kind": "custom", "conn": 0.5, "vconn": 0.1,
+            "delay": 0.739, "structured_frac": {"dsp_frac_l0": 1.0, "bram_frac_l0": 0.0, "cluster": 0.0,
+                                                "stagger": 0.501, "band_pos": 0.5}}
+    env = dict(os.environ, LAZAGNA_ROOT=fake_root, LAZAGNA_CODE=REPO, WORK=str(tmp_path), TASK=json.dumps(task))
+    res = subprocess.run([sys.executable, "-c", EXPERIMENT_CHAMPION], env=env, capture_output=True, text=True, cwd=REPO)
+    assert res.returncode == 0, res.stderr[-2000:]
+    out = json.loads(res.stdout.strip().splitlines()[-1])
+    (c,) = out["calls"]
+    assert (c["conn"], c["vconn"], c["delay"], c["seeds"]) == (0.5, 0.1, 0.739, [1, 2, 3, 4, 5])
+    assert c["columns"] == out["want"]

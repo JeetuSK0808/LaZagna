@@ -178,6 +178,25 @@ class SearchConfig:
     # 2 points of gain to tie with an architecture that has no vertical links.
     link_penalty: float = 0.0
 
+    # Vertical links (multi-benchmark search; the defaults leave it exactly as it was).
+    # vertical_connectivity_choices: share of each 3D switch block's channels that cross the
+    # layers (LaZagna's vertical_connectivity), in the structured and layout modes. One value
+    # is used as is (default 1.0: every channel crosses); with more than one, the search
+    # samples it as the categorical "vertical_connectivity". link_fraction() is then
+    # connectivity x vertical_connectivity.
+    vertical_connectivity_choices: tuple[float, ...] = (1.0,)
+    # Vertical links as a third objective: the sampler minimizes (-CPD gain, -WL gain,
+    # link_fraction) and the study has a 3D Pareto front. Refused together with
+    # objective_weights or a non-zero link_penalty (check_priorities).
+    links_objective: bool = False
+    # Structured multi-benchmark search only: queue the known hard-block layouts (ANCHORS) as
+    # the first trials, once per study (enqueue_anchors).
+    anchors: bool = False
+    # population_size of the nsga2 / nsga3 samplers (an integer >= 2); None = Optuna's default
+    # (50). Their first generation is drawn at random, so with fewer trials than the
+    # population an NSGA study is a random search.
+    nsga_population: Optional[int] = None
+
 def sample_layout(trial: optuna.Trial, cfg: SearchConfig) -> LayoutSpec:
     family = trial.suggest_categorical("family", ["distributed", "edge"])
     asymmetry = trial.suggest_float("asymmetry", 0.0, 1.0)
@@ -304,17 +323,16 @@ def sample_structured(trial: optuna.Trial, cfg: SearchConfig) -> ColumnLayoutSpe
     return structured_columns(n, nd, nb, dsp_l0, bram_l0, cluster, stagger, band_pos)
 
 
+# The fraction-form structured parameters and their ranges, in sampling order.
+STRUCTURED_FRACTIONS = (("dsp_frac_l0", 0.0, 1.0), ("bram_frac_l0", 0.0, 1.0), ("cluster", 0.0, 1.0),
+                        ("stagger", 0.0, 1.0), ("band_pos", 0.15, 0.85))
+
+
 def sample_structured_fractions(trial: optuna.Trial) -> dict:
     """The structured layout parameters with the layer-0 shares as fractions of the device's
     DSP / BRAM columns, so one trial means the same arrangement on devices of any size
     (used by the multi-benchmark search)."""
-    return {
-        "dsp_frac_l0": trial.suggest_float("dsp_frac_l0", 0.0, 1.0),
-        "bram_frac_l0": trial.suggest_float("bram_frac_l0", 0.0, 1.0),
-        "cluster": trial.suggest_float("cluster", 0.0, 1.0),
-        "stagger": trial.suggest_float("stagger", 0.0, 1.0),
-        "band_pos": trial.suggest_float("band_pos", 0.15, 0.85),
-    }
+    return {name: trial.suggest_float(name, lo, hi) for name, lo, hi in STRUCTURED_FRACTIONS}
 
 
 def structured_from_fractions(cfg: SearchConfig, p: dict) -> ColumnLayoutSpec:
@@ -542,12 +560,42 @@ def _read_baseline(path: str):
     return None
 
 
-def _write_baseline(path: str, cpd: float, wl: float) -> None:
+def _read_baseline_place(path: str) -> Optional[tuple[float, float]]:
+    """(place_cpd, place_wl) kept next to a routed reference: VPR's placement estimates from
+    the same runs. None for files without them (written by a placement-only run, or before
+    the keys existed)."""
+    import json
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        got = d.get("place_cpd"), d.get("place_wl")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return got if all(_positive(v) for v in got) else None
+
+
+def _write_baseline(path: str, cpd: float, wl: float, extra: Optional[dict] = None) -> None:
+    """extra: optional keys stored next to cpd / wl (place_cpd, place_wl)."""
     import json
     tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w") as f:
-        json.dump({"cpd": cpd, "wl": wl}, f)
+        json.dump({"cpd": cpd, "wl": wl, **(extra or {})}, f)
     os.replace(tmp, path)   # atomic, so a concurrent reader never sees a partial file
+
+
+def _positive(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0
+
+
+def _place_estimates(info: Optional[dict]) -> Optional[tuple[float, float]]:
+    """Seed geomeans of VPR's placement-estimated CPD and WL, from the per_seed list that
+    evaluate() leaves in _run_one's `info`. None unless every seed has both."""
+    seeds = (info or {}).get("per_seed") or []
+    cpd = [s.get("place_cpd") for s in seeds]
+    wl = [s.get("place_wl") for s in seeds]
+    if not seeds or not all(_positive(v) for v in cpd + wl):
+        return None
+    return _geomean(cpd), _geomean(wl)
 
 
 def make_objective(cfg: SearchConfig, block_types=None, study: Optional[optuna.Study] = None,
@@ -664,13 +712,16 @@ def make_objective(cfg: SearchConfig, block_types=None, study: Optional[optuna.S
         trial.set_user_attr("baseline_cpd", baseline["cpd"])
         trial.set_user_attr("baseline_wl", baseline["wl"])
 
-        if not (cfg.objective_weights or cfg.link_penalty):
+        if not (cfg.objective_weights or cfg.link_penalty or cfg.links_objective):
             return -cpd_impr, -wl_impr
         links = link_fraction(arch_type, connectivity)
         trial.set_user_attr("link_fraction", links)
         return objective_values(cfg, cpd_impr, wl_impr, links)
 
     check_priorities(cfg)
+    if tuple(cfg.vertical_connectivity_choices) != (1.0,) or cfg.anchors:
+        raise ValueError("vertical_connectivity_choices and anchors are options of the multi-benchmark "
+                         "search (SearchConfig.benchmarks); the single-design search does not use them")
     return objective
 
 
@@ -681,22 +732,35 @@ def link_fraction(arch_type: str, connectivity: float, vertical_connectivity: fl
 
 
 def check_priorities(cfg: SearchConfig) -> None:
+    """Objective settings (weights, link penalty, links objective) and the vertical-link choices."""
     w = tuple(cfg.objective_weights)
     if w and (len(w) != 2 or not all(math.isfinite(float(x)) for x in w) or not any(w)):
         raise ValueError(f"objective_weights must be (w_cpd, w_wl) with at least one non-zero, got {w}")
     if not math.isfinite(float(cfg.link_penalty)):
         raise ValueError(f"link_penalty must be a finite number, got {cfg.link_penalty}")
+    if cfg.links_objective and (w or cfg.link_penalty):
+        raise ValueError("links_objective makes vertical links a third objective, so it cannot be combined "
+                         "with objective_weights (one weighted objective) or a non-zero link_penalty (links "
+                         "would be charged twice); drop those, or links_objective")
+    v = tuple(cfg.vertical_connectivity_choices)
+    if not v or not all(_positive(x) and x <= 1 for x in v) or len(set(v)) != len(v):
+        raise ValueError(f"vertical_connectivity_choices must be distinct numbers in (0, 1], got {v}")
 
 
 def n_objectives(cfg: SearchConfig) -> int:
-    """1 with objective_weights (one weighted objective), else 2 (CPD and WL, a Pareto front)."""
-    return 1 if cfg.objective_weights else 2
+    """1 with objective_weights (one weighted objective), 3 with links_objective (CPD gain, WL
+    gain and vertical links), else 2 (CPD and WL, a Pareto front)."""
+    if cfg.objective_weights:
+        return 1
+    return 3 if cfg.links_objective else 2
 
 
 def objective_values(cfg: SearchConfig, cpd_impr: float, wl_impr: float, links: float = 1.0):
     """What the sampler minimizes, from the gains in %: (-CPD gain, -WL gain) by default; with
     objective_weights, -(w_cpd * CPD gain + w_wl * WL gain). link_penalty * links is taken off
-    each gain first."""
+    each gain first. With links_objective: (-CPD gain, -WL gain, links)."""
+    if cfg.links_objective:
+        return -cpd_impr, -wl_impr, float(links)
     pen = cfg.link_penalty * links
     if cfg.objective_weights:
         w_cpd, w_wl = cfg.objective_weights
@@ -745,7 +809,8 @@ def _shared_value(path: str, compute, polls: int = 180, poll_s: int = 20):
     """(cpd, wl) cached in a JSON file that many workers share: the first to arrive computes
     it (O_EXCL lock file), the rest poll. If the computation fails, the lock is released so
     the next caller retries at once instead of waiting out the polls. If the owner died
-    holding the lock, compute anyway."""
+    holding the lock, compute anyway. compute() returns (cpd, wl) or (cpd, wl, extra), extra
+    being more keys for the file (see _write_baseline)."""
     import time as _t
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     lock = path + ".lock"
@@ -759,18 +824,18 @@ def _shared_value(path: str, compute, polls: int = 180, poll_s: int = 20):
             _t.sleep(poll_s)            # another worker is computing it
             continue
         try:
-            cpd, wl = compute()
+            res = compute()
         except BaseException:
             try:
                 os.remove(lock)
             except OSError:
                 pass
             raise
-        _write_baseline(path, cpd, wl)
-        return cpd, wl
-    cpd, wl = compute()                 # the owner died holding the lock
-    _write_baseline(path, cpd, wl)
-    return cpd, wl
+        _write_baseline(path, *res)
+        return res[0], res[1]
+    res = compute()                     # the owner died holding the lock
+    _write_baseline(path, *res)
+    return res[0], res[1]
 
 
 def make_suite_objective(cfg: SearchConfig, designs: Optional[list] = None,
@@ -780,33 +845,56 @@ def make_suite_objective(cfg: SearchConfig, designs: Optional[list] = None,
     Per trial: one architecture is sampled, evaluated on every design, and compared with each
     design's own 3D reference (the evenly spread, aligned layout at full connectivity, as in
     make_objective). Returns (-CPD gain %, -WL gain %) where gain = 100 * (1 - geomean of the
-    per-design new/reference ratios); with objective_weights / link_penalty set, see
-    objective_values(). Per-design numbers go to the trial's user attrs. A design that fails
-    prunes the trial. References are computed once per design and shared through files in
-    `baseline_dir` (default <prep_dir>/baselines when prep_dir is set)."""
+    per-design new/reference ratios); with objective_weights / link_penalty / links_objective
+    set, see objective_values(). Per-design numbers go to the trial's user attrs. A design that
+    fails prunes the trial. References are computed once per design and shared through files in
+    `baseline_dir` (default <prep_dir>/baselines when prep_dir is set).
+
+    Routed runs (fidelity "route") also keep VPR's placement estimates from the same runs, for
+    the trial and the reference: per design in per_design (place_cpd, place_wl, baseline_place_*,
+    place_*_impr_pct) and, when every design has them, as the geomean gains place_cpd_impr_pct /
+    place_wl_impr_pct. They only describe the runs; the objective is unchanged."""
     check_priorities(cfg)
+    vchoices = tuple(cfg.vertical_connectivity_choices)
+    if cfg.search_mode == "connectivity" and vchoices != (1.0,):
+        raise ValueError("vertical_connectivity_choices applies to the structured and layout search modes, "
+                         "not to connectivity mode")
+    # At the default (fixed at 1.0) _run_one is called exactly as before the option existed.
+    vkw_for = (lambda v: {}) if vchoices == (1.0,) else (lambda v: {"vertical_connectivity": v})
     designs = designs if designs is not None else design_configs(cfg)
     if baseline_dir is None and cfg.prep_dir:
         baseline_dir = os.path.join(cfg.prep_dir, "baselines")
     baselines: dict = {}
+    place_refs: dict = {}
+
+    def routed(sub):
+        return sub.fidelity == "route"
 
     def reference(entry, sub):
         if entry in baselines:
             return baselines[entry]
 
         def compute():
-            m, err = _run_one(sub, reference_columns(sub), f"{sub.run_tag}ref", sub.arch_type, 1.0, 0.739)
+            info = {}
+            m, err = _run_one(sub, reference_columns(sub), f"{sub.run_tag}ref", sub.arch_type, 1.0, 0.739,
+                              **({"info": info} if routed(sub) else {}))
             if m is None:
                 raise RuntimeError(f"reference run failed for {entry}: {err}")
-            return m
+            pl = _place_estimates(info)
+            return m if pl is None else (m[0], m[1], {"place_cpd": pl[0], "place_wl": pl[1]})
         if baseline_dir:
-            got = _shared_value(os.path.join(baseline_dir, f"{baseline_signature(sub)}.json"), compute)
+            path = os.path.join(baseline_dir, f"{baseline_signature(sub)}.json")
+            got = _shared_value(path, compute)
+            place_refs[entry] = _read_baseline_place(path) if routed(sub) else None
         else:
-            got = compute()
+            res = compute()
+            got = (res[0], res[1])
+            place_refs[entry] = (res[2]["place_cpd"], res[2]["place_wl"]) if len(res) > 2 else None
         baselines[entry] = got
         return got
 
     def objective(trial: optuna.Trial) -> tuple[float, float]:
+        vconn = 1.0
         if cfg.search_mode == "connectivity":
             arch_type, connectivity, connection_type, delay_ratio = sample_connectivity(trial, cfg)
             # The reference's own columns, so a trial differs from the reference only in its
@@ -824,12 +912,17 @@ def make_suite_objective(cfg: SearchConfig, designs: Optional[list] = None,
             connectivity = trial.suggest_categorical("connectivity", list(cfg.connectivity_choices))
             connection_type = "subset"
             delay_ratio = trial.suggest_float("delay_ratio", *cfg.delay_ratio_range)
+            vconn = (trial.suggest_categorical("vertical_connectivity", list(vchoices))
+                     if len(vchoices) > 1 else vchoices[0])
 
         r_cpd, r_wl, per = [], [], {}
+        p_cpd, p_wl = [], []
         for i, (entry, sub) in enumerate(designs):
             base_cpd, base_wl = reference(entry, sub)
+            info = {}
+            kw = dict(vkw_for(vconn), **({"info": info} if routed(sub) else {}))
             metrics, err = _run_one(sub, spec_for(sub), f"{cfg.run_tag}t{trial.number}d{i}",
-                                    arch_type, connectivity, delay_ratio, connection_type)
+                                    arch_type, connectivity, delay_ratio, connection_type, **kw)
             if metrics is None:
                 trial.set_user_attr("failed_design", entry)
                 trial.set_user_attr("stderr_tail", err or "parse_failed")
@@ -840,15 +933,26 @@ def make_suite_objective(cfg: SearchConfig, designs: Optional[list] = None,
             per[entry] = {"cpd": cpd, "wl": wl, "baseline_cpd": base_cpd, "baseline_wl": base_wl,
                           "cpd_impr_pct": 100.0 * (base_cpd - cpd) / base_cpd,
                           "wl_impr_pct": 100.0 * (base_wl - wl) / base_wl}
+            pl, ref = _place_estimates(info), place_refs.get(entry)
+            if pl and ref:
+                per[entry].update({"place_cpd": pl[0], "place_wl": pl[1],
+                                   "baseline_place_cpd": ref[0], "baseline_place_wl": ref[1],
+                                   "place_cpd_impr_pct": 100.0 * (ref[0] - pl[0]) / ref[0],
+                                   "place_wl_impr_pct": 100.0 * (ref[1] - pl[1]) / ref[1]})
+                p_cpd.append(pl[0] / ref[0])
+                p_wl.append(pl[1] / ref[1])
 
         cpd_impr = 100.0 * (1.0 - _geomean(r_cpd))
         wl_impr = 100.0 * (1.0 - _geomean(r_wl))
-        links = link_fraction(arch_type, connectivity)
+        links = link_fraction(arch_type, connectivity, vconn)
         trial.set_user_attr("cpd_impr_pct", cpd_impr)
         trial.set_user_attr("wl_impr_pct", wl_impr)
         trial.set_user_attr("link_fraction", links)
         trial.set_user_attr("designs", [e for e, _ in designs])
         trial.set_user_attr("per_design", per)
+        if p_cpd and len(p_cpd) == len(designs):
+            trial.set_user_attr("place_cpd_impr_pct", 100.0 * (1.0 - _geomean(p_cpd)))
+            trial.set_user_attr("place_wl_impr_pct", 100.0 * (1.0 - _geomean(p_wl)))
         return objective_values(cfg, cpd_impr, wl_impr, links)
 
     return objective
@@ -857,13 +961,24 @@ def make_suite_objective(cfg: SearchConfig, designs: Optional[list] = None,
 SAMPLERS = ("tpe", "nsga2", "nsga3", "random", "qmc")
 
 
+def _nsga_kwargs(cfg: SearchConfig) -> dict:
+    """{"population_size": cfg.nsga_population} for the NSGA samplers ({} = Optuna's default)."""
+    p = cfg.nsga_population
+    if p is None:
+        return {}
+    if isinstance(p, bool) or not isinstance(p, int) or p < 2:
+        raise ValueError(f"nsga_population must be an integer >= 2 (or None for Optuna's default), got {p!r}")
+    return {"population_size": p}
+
+
 def _make_sampler(cfg: SearchConfig):
+    nsga = _nsga_kwargs(cfg)    # validated for every sampler, used by the NSGA ones
     if cfg.sampler == "nsga2":
-        return optuna.samplers.NSGAIISampler()
+        return optuna.samplers.NSGAIISampler(**nsga)
     if cfg.sampler == "random":
         return optuna.samplers.RandomSampler()
     if cfg.sampler == "nsga3":
-        return optuna.samplers.NSGAIIISampler()
+        return optuna.samplers.NSGAIIISampler(**nsga)
     if cfg.sampler == "qmc":
         try:
             import scipy.stats  # noqa: F401  (QMCSampler draws its Sobol sequence with scipy)
@@ -910,6 +1025,71 @@ def enqueue_named_layouts(study: optuna.Study, cfg: SearchConfig) -> None:
         study.enqueue_trial(params, user_attrs={"seeded_from": name})
 
 
+# Anchors (SearchConfig.anchors): known hard-block layouts as trials of the structured
+# multi-benchmark search, at connectivity 1.0 and delay ratio 0.739, evenly spread (cluster 0,
+# band_pos 0.5). (name, dsp_frac_l0, bram_frac_l0, stagger, vertical_connectivity).
+# How they relate to the study's named layouts (campaign/experiment.py named_layout):
+#   split_types   DSP on layer 0, BRAM on layer 1: the study's split_types column for column (on
+#                 all 22 study devices). That needs stagger just above 0.5: it puts layer 1's BRAM
+#                 columns half a pitch from the DSP columns, where the study has them; 0.5 itself
+#                 lands on rounding ties, and stagger 0 would stack them over the DSP columns.
+#   recommended   split_types with vertical_connectivity 0.1, the study's recommended
+#                 architecture; queued only when 0.1 is one of the vertical_connectivity choices.
+#   split_rev, hb_top, hb_one_layer, even_split: the per-layer column counts of the study's
+#                 split_rev, hb_top, hb_one_layer and aligned layouts, not their exact columns.
+#                 The structured form spreads a layer's hard blocks at evenly spaced, centered
+#                 positions, types interleaved DSP first, and cannot shift layer 0; the study's
+#                 layouts put BRAM at k * n / m from column 0 and the DSPs in the gaps. So
+#                 even_split is NOT reference_columns(): its gain is a seed-noise check near 0,
+#                 not an identity.
+ANCHOR_SPLIT_STAGGER = 0.501
+ANCHORS = (
+    ("even_split", 0.5, 0.5, 0.0, 1.0),
+    ("split_types", 1.0, 0.0, ANCHOR_SPLIT_STAGGER, 1.0),
+    ("split_rev", 0.0, 1.0, 0.0, 1.0),
+    ("hb_top", 0.0, 0.0, 0.0, 1.0),
+    ("hb_one_layer", 1.0, 1.0, 0.0, 1.0),
+    ("recommended", 1.0, 0.0, ANCHOR_SPLIT_STAGGER, 0.1),
+)
+
+
+def anchor_trials(cfg: SearchConfig) -> list[tuple[str, dict]]:
+    """(name, params) of the ANCHORS that lie inside cfg's search space, in queue order: their
+    connectivity (1.0) must be a connectivity choice, their delay ratio (0.739) inside the
+    range, and their vertical connectivity a choice (or THE value, when it is fixed)."""
+    if not cfg.benchmarks or cfg.search_mode != "structured":
+        raise ValueError("anchors are for the structured multi-benchmark search "
+                         "(SearchConfig.benchmarks set and search_mode='structured')")
+    lo_d, hi_d = cfg.delay_ratio_range
+    vchoices = tuple(cfg.vertical_connectivity_choices)
+    out = []
+    for name, dsp, bram, stagger, vconn in ANCHORS:
+        p = {"dsp_frac_l0": dsp, "bram_frac_l0": bram, "cluster": 0.0, "stagger": stagger, "band_pos": 0.5}
+        fits = (all(lo <= p[k] <= hi for k, lo, hi in STRUCTURED_FRACTIONS)
+                and 1.0 in cfg.connectivity_choices and lo_d <= 0.739 <= hi_d
+                and (vconn in vchoices if len(vchoices) > 1 else vconn == vchoices[0]))
+        if not fits:
+            continue
+        p.update(connectivity=1.0, delay_ratio=0.739)
+        if len(vchoices) > 1:
+            p["vertical_connectivity"] = vconn
+        out.append((name, p))
+    return out
+
+
+def enqueue_anchors(study: optuna.Study, cfg: SearchConfig) -> list[str]:
+    """Queue anchor_trials(cfg) as the study's next trials (user attr seeded_from = the anchor's
+    name), once per study: if any trial of the study, in any state, already has seeded_from,
+    nothing is queued. Returns the names queued. Processes that share a study must not run
+    this at the same moment (campaign/suite_study.py lets only one of them in)."""
+    todo = anchor_trials(cfg)
+    if any("seeded_from" in t.user_attrs for t in study.get_trials(deepcopy=False)):
+        return []
+    for name, params in todo:
+        study.enqueue_trial(params, user_attrs={"seeded_from": name})
+    return [name for name, _ in todo]
+
+
 def run_study(cfg: SearchConfig, n_trials: int = 40, seed_named: bool = True,
               study_name: str = "lazagna_3d", storage=None) -> optuna.Study:
     """`storage` may be an optuna storage URL string OR a storage object
@@ -924,6 +1104,8 @@ def run_study(cfg: SearchConfig, n_trials: int = 40, seed_named: bool = True,
 
     if seed_named and cfg.search_mode == "layout":
         enqueue_named_layouts(study, cfg)
+    if cfg.anchors:
+        enqueue_anchors(study, cfg)
 
     objective = make_suite_objective(cfg) if cfg.benchmarks else make_objective(cfg, study=study)
     study.optimize(objective, n_trials=n_trials)
